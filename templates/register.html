@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>注册管理面板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+  <div class="max-w-[1600px] mx-auto px-4 py-5">
+    <div class="mb-4 flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-900">ChatGPT 管理面板</h1>
+        <p class="mt-1 text-xs text-slate-500">统一整合注册与 Pay，左侧配置，右侧日志。</p>
+      </div>
+      <div class="rounded-xl bg-white border border-slate-200 shadow-sm px-3 py-2 text-xs text-slate-600 space-y-1 min-w-[220px]">
+        <div><i class="fa fa-envelope-o mr-2 text-blue-500"></i>邮箱服务：<span class="font-semibold">{{ mail_provider }}</span></div>
+        <div><i class="fa fa-cloud-upload mr-2 text-emerald-500"></i>CPA 上传：<span class="font-semibold">{{ '已配置' if upload_api_configured else '未配置' }}</span></div>
+        <div><i class="fa fa-database mr-2 text-violet-500"></i>账号源：<span class="font-semibold">SQLite</span></div>
+      </div>
+    </div>
+
+    <div class="mb-4 flex gap-2">
+      <a href="/?tab=register" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'register' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+        <i class="fa fa-user-plus mr-2"></i>注册
+      </a>
+      <a href="/?tab=pay" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'pay' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+        <i class="fa fa-credit-card mr-2"></i>Pay
+      </a>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)] gap-4 items-start">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+        {% if active_tab == 'register' %}
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-sliders mr-2 text-indigo-500"></i>注册参数</h2>
+          <select id="configSectionSelect" class="rounded-lg border border-slate-300 px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="register">基础注册</option>
+            <option value="mail">Mail 配置</option>
+            <option value="cpa">CPA 配置</option>
+          </select>
+        </div>
+
+        <form method="post" action="/register/start" class="space-y-4">
+          <section data-section="register" class="config-section space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">代理</label>
+              <input name="proxy" value="{{ state.last_form.proxy }}" placeholder="http://127.0.0.1:7890" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">注册数量</label>
+                <input type="number" min="1" name="total_accounts" value="{{ state.last_form.total_accounts }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">并发数</label>
+                <input type="number" min="1" name="max_workers" value="{{ state.last_form.max_workers }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">当前邮箱服务</label>
+              <div class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">{{ state.last_form.mail_provider }}</div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">CPA 分批上传阈值</label>
+              <input type="number" min="1" name="cpa_upload_every_n" value="{{ state.last_form.cpa_upload_every_n }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div class="space-y-2 pt-1">
+              <label class="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                <span class="text-xs text-slate-700"><i class="fa fa-stethoscope mr-2 text-sky-500"></i>执行预检</span>
+                <span>
+                  <input type="hidden" name="run_preflight" value="false" />
+                  <input type="checkbox" name="run_preflight" value="true" {% if state.last_form.run_preflight == 'true' %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                </span>
+              </label>
+              <label class="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                <span class="text-xs text-slate-700"><i class="fa fa-trash-o mr-2 text-rose-500"></i>本次任务清理 CPA 无效号</span>
+                <span>
+                  <input type="hidden" name="cpa_cleanup" value="false" />
+                  <input type="checkbox" name="cpa_cleanup" value="true" {% if state.last_form.cpa_cleanup == 'true' %}checked{% endif %} class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+                </span>
+              </label>
+            </div>
+          </section>
+
+          <section data-section="mail" class="config-section hidden space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">Provider</label>
+              <select id="mailProviderSelect" name="mail_provider" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                {% for provider in ['duckmail', 'tempmail_lol', 'lamail', 'cfmail'] %}
+                <option value="{{ provider }}" {% if state.last_form.mail_provider == provider %}selected{% endif %}>{{ provider }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div data-mail-section="duckmail" class="mail-section space-y-3 hidden">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">DuckMail API Base</label>
+                <input name="duckmail_api_base" value="{{ state.last_form.duckmail_api_base }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">DuckMail Bearer</label>
+                <input name="duckmail_bearer" value="{{ state.last_form.duckmail_bearer }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+
+            <div data-mail-section="tempmail_lol" class="mail-section space-y-3 hidden">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">TempMail.lol API Base</label>
+                <input name="tempmail_lol_api_base" value="{{ state.last_form.tempmail_lol_api_base }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+
+            <div data-mail-section="lamail" class="mail-section space-y-3 hidden">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">LaMail API Base</label>
+                <input name="lamail_api_base" value="{{ state.last_form.lamail_api_base }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">LaMail API Key</label>
+                <input name="lamail_api_key" value="{{ state.last_form.lamail_api_key }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">LaMail Domain</label>
+                <input name="lamail_domain" value="{{ state.last_form.lamail_domain }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+
+            <div data-mail-section="cfmail" class="mail-section space-y-3 hidden">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">CFMail Config Path</label>
+                <input name="cfmail_config_path" value="{{ state.last_form.cfmail_config_path }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">CFMail Profile</label>
+                <input name="cfmail_profile" value="{{ state.last_form.cfmail_profile }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+          </section>
+
+          <section data-section="cpa" class="config-section hidden space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">CPA Base URL</label>
+              <input name="upload_api_url" value="{{ state.last_form.upload_api_url }}" placeholder="https://api.funapi.top" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              <p class="mt-1 text-[11px] text-slate-400">这里只填域名根地址，系统会自动补成 [`/v0/management`](api.md:2) 和 [`/auth-files`](api.md:754)。</p>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">Upload API Token</label>
+              <input name="upload_api_token" value="{{ state.last_form.upload_api_token }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">Upload API Proxy</label>
+              <input name="upload_api_proxy" value="{{ state.last_form.upload_api_proxy }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <label class="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50">
+              <span class="text-xs text-slate-700"><i class="fa fa-shield mr-2 text-emerald-500"></i>默认启用 CPA 清理</span>
+              <span>
+                <input type="hidden" name="cpa_cleanup_enabled" value="false" />
+                <input type="checkbox" name="cpa_cleanup_enabled" value="true" {% if state.last_form.cpa_cleanup_enabled == 'true' %}checked{% endif %} class="h-4 w-4 rounded border border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+              </span>
+            </label>
+          </section>
+
+          <div class="grid grid-cols-2 gap-3">
+            <button type="submit" formaction="/register/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-save mr-2"></i>保存配置
+            </button>
+            {% if state.running and active_tab == 'register' %}
+            <button type="submit" formaction="/register/stop" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-pause mr-2"></i>暂停注册
+            </button>
+            {% else %}
+            <button type="submit" formaction="/register/start" class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
+              <i class="fa fa-play mr-2"></i>启动注册
+            </button>
+            {% endif %}
+          </div>
+        </form>
+
+        {% else %}
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-credit-card mr-2 text-emerald-500"></i>Pay 参数</h2>
+          <span class="text-[11px] text-slate-400">SQLite 账号 + 精简支付字段</span>
+        </div>
+
+        <form id="payForm" method="post" action="/pay/start" class="space-y-3">
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">账号</label>
+            <select name="pay_email" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              {% for account in account_options %}
+              <option value="{{ account.email }}" {% if state.last_pay_form.pay_email == account.email %}selected{% endif %}>{{ account.email }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">代理</label>
+            <input name="proxy" value="{{ state.last_pay_form.proxy }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
+            <input name="payment_country" value="{{ state.last_pay_form.payment_country }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div class="col-span-2">
+              <label class="block text-xs font-medium text-slate-700 mb-1">卡号</label>
+              <input name="payment_card_number" value="{{ state.last_pay_form.payment_card_number }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">到期月</label>
+              <input name="payment_card_exp_month" value="{{ state.last_pay_form.payment_card_exp_month }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">到期年</label>
+              <input name="payment_card_exp_year" value="{{ state.last_pay_form.payment_card_exp_year }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div class="col-span-2">
+              <label class="block text-xs font-medium text-slate-700 mb-1">CVC</label>
+              <input name="payment_card_cvc" value="{{ state.last_pay_form.payment_card_cvc }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+          </div>
+
+          <div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-500">
+            `payment_billing_email` 会根据所选账号自动填充；全局重试、停留时间等配置继续走 [`config.json`](config.json)。
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">账单地址模式</label>
+            <select id="addressModeSelect" name="address_mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              <option value="auto" {% if state.last_pay_form.address_mode == 'auto' %}selected{% endif %}>自动生成地址</option>
+              <option value="manual" {% if state.last_pay_form.address_mode == 'manual' %}selected{% endif %}>手动填写地址</option>
+            </select>
+          </div>
+
+          <div class="space-y-3" id="manualAddressSection">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">账单姓名</label>
+              <input name="payment_billing_name" value="{{ state.last_pay_form.payment_billing_name }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">账单地址</label>
+              <input name="payment_billing_line1" value="{{ state.last_pay_form.payment_billing_line1 }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">城市</label>
+                <input name="payment_billing_city" value="{{ state.last_pay_form.payment_billing_city }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">州/省</label>
+                <input name="payment_billing_state" value="{{ state.last_pay_form.payment_billing_state }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div class="col-span-2">
+                <label class="block text-xs font-medium text-slate-700 mb-1">邮编</label>
+                <input name="payment_billing_postal_code" value="{{ state.last_pay_form.payment_billing_postal_code }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <button type="submit" formaction="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-save mr-2"></i>保存配置
+            </button>
+            <button type="button" id="fillAddressBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-random mr-2"></i>自动地址
+            </button>
+            <button type="submit" formaction="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
+              <i class="fa fa-credit-card mr-2"></i>{% if state.running %}Pay 任务执行中{% else %}启动 Pay{% endif %}
+            </button>
+          </div>
+        </form>
+        {% endif %}
+      </div>
+
+      <div class="space-y-4">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+          <div class="flex items-center justify-between mb-3 gap-4">
+            <div class="flex items-center gap-3 min-w-0">
+              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-terminal mr-2 text-slate-600"></i>运行日志</h2>
+              <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap" data-status-badge>
+                <i class="fa fa-pause mr-2"></i>空闲
+              </span>
+            </div>
+            <label class="inline-flex items-center gap-2 text-[11px] text-slate-500 whitespace-nowrap select-none cursor-pointer">
+              <input type="checkbox" id="autoScrollToggle" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" checked />
+              <span>自动滚动日志</span>
+            </label>
+          </div>
+          <div class="rounded-xl bg-slate-950 text-slate-100 p-4 min-h-[620px] max-h-[75vh] overflow-auto" id="logViewport">
+            <pre class="whitespace-pre-wrap text-xs leading-5" data-log-container>{{ state.last_output if state.last_output else '暂无日志输出，启动任务后会在这里显示。' }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const activeTab = '{{ active_tab }}';
+    const statusBadge = document.querySelector('[data-status-badge]');
+    const logContainer = document.querySelector('[data-log-container]');
+    const logViewport = document.getElementById('logViewport');
+    const autoScrollToggle = document.getElementById('autoScrollToggle');
+    const autoScrollStorageKey = 'registerPanelAutoScroll';
+    let lastErrorText = '';
+
+    function isAutoScrollEnabled() {
+      return !!autoScrollToggle?.checked;
+    }
+
+    function syncAutoScrollPreference() {
+      if (!autoScrollToggle) return;
+      const saved = window.localStorage.getItem(autoScrollStorageKey);
+      if (saved === 'false') {
+        autoScrollToggle.checked = false;
+      } else if (saved === 'true') {
+        autoScrollToggle.checked = true;
+      }
+      autoScrollToggle.addEventListener('change', () => {
+        window.localStorage.setItem(autoScrollStorageKey, autoScrollToggle.checked ? 'true' : 'false');
+        if (autoScrollToggle.checked && logViewport) {
+          logViewport.scrollTop = logViewport.scrollHeight;
+        }
+      });
+    }
+
+    function scrollLogToBottom(force = false) {
+      if (!logViewport) return;
+      if (force || isAutoScrollEnabled()) {
+        logViewport.scrollTop = logViewport.scrollHeight;
+      }
+    }
+
+    function ensureErrorDialog() {
+      let dialog = document.getElementById('errorDialog');
+      if (dialog) return dialog;
+      dialog = document.createElement('dialog');
+      dialog.id = 'errorDialog';
+      dialog.className = 'rounded-2xl border border-rose-200 shadow-xl w-[min(720px,92vw)] p-0 backdrop:bg-slate-900/40';
+      dialog.innerHTML = `
+        <div class="p-4 bg-white rounded-2xl">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-base font-semibold text-rose-700"><i class="fa fa-exclamation-triangle mr-2"></i>错误信息</h3>
+            <button type="button" class="text-slate-400 hover:text-slate-600" onclick="document.getElementById('errorDialog').close()"><i class="fa fa-times"></i></button>
+          </div>
+          <pre class="whitespace-pre-wrap text-xs text-rose-700 overflow-auto max-h-[60vh] bg-rose-50 border border-rose-100 rounded-xl p-3" id="errorDialogContent"></pre>
+          <div class="mt-4 flex justify-end">
+            <button type="button" class="rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-sm px-4 py-2" onclick="document.getElementById('errorDialog').close()">关闭</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(dialog);
+      return dialog;
+    }
+
+    function showErrorDialog(message) {
+      const dialog = ensureErrorDialog();
+      const content = document.getElementById('errorDialogContent');
+      if (content) content.textContent = message || '';
+      if (!dialog.open) dialog.showModal();
+    }
+
+    async function pollStatus() {
+      try {
+        const res = await fetch('/status', { cache: 'no-store' });
+        const data = await res.json();
+        if (logContainer) {
+          const nextText = data.last_output || '暂无日志输出，启动任务后会在这里显示。';
+          const changed = logContainer.textContent !== nextText;
+          logContainer.textContent = nextText;
+          if (changed) {
+            scrollLogToBottom();
+          }
+        }
+        if (data.last_error && data.last_error !== lastErrorText) {
+          lastErrorText = data.last_error;
+          showErrorDialog(data.last_error);
+        }
+        if (!data.last_error) {
+          lastErrorText = '';
+        }
+        if (statusBadge) {
+          if (data.running) {
+            statusBadge.className = 'inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+            statusBadge.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>执行中';
+          } else if (data.last_success) {
+            statusBadge.className = 'inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+            statusBadge.innerHTML = '<i class="fa fa-check mr-2"></i>最近一次成功';
+          } else if (data.last_error) {
+            statusBadge.className = 'inline-flex items-center rounded-full bg-rose-100 text-rose-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+            statusBadge.innerHTML = '<i class="fa fa-times mr-2"></i>最近一次失败';
+          } else {
+            statusBadge.className = 'inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap';
+            statusBadge.innerHTML = '<i class="fa fa-pause mr-2"></i>空闲';
+          }
+        }
+      } catch (e) {
+        return;
+      }
+    }
+
+    syncAutoScrollPreference();
+    scrollLogToBottom(true);
+    setInterval(pollStatus, 1500);
+    pollStatus();
+
+    if (activeTab === 'register') {
+      const sectionSelect = document.getElementById('configSectionSelect');
+      const sections = document.querySelectorAll('.config-section');
+      const mailProviderSelect = document.getElementById('mailProviderSelect');
+      const mailSections = document.querySelectorAll('[data-mail-section]');
+
+      function switchSection() {
+        const value = sectionSelect.value;
+        sections.forEach(section => section.classList.toggle('hidden', section.dataset.section !== value));
+      }
+
+      function switchMailSection(provider) {
+        mailSections.forEach(section => section.classList.toggle('hidden', section.dataset.mailSection !== provider));
+      }
+
+      sectionSelect?.addEventListener('change', switchSection);
+      mailProviderSelect?.addEventListener('change', () => switchMailSection(mailProviderSelect.value));
+
+      switchSection();
+      if (mailProviderSelect) switchMailSection(mailProviderSelect.value);
+    }
+
+    if (activeTab === 'pay') {
+      const addressModeSelect = document.getElementById('addressModeSelect');
+      const manualAddressSection = document.getElementById('manualAddressSection');
+      const toggleAddressMode = () => {
+        manualAddressSection.classList.toggle('hidden', addressModeSelect.value !== 'manual');
+      };
+      addressModeSelect?.addEventListener('change', toggleAddressMode);
+      toggleAddressMode();
+
+      const fillBtn = document.getElementById('fillAddressBtn');
+      const payForm = document.getElementById('payForm');
+      fillBtn?.addEventListener('click', async () => {
+        try {
+          const paymentCountry = (payForm.querySelector('[name="payment_country"]')?.value || 'US').trim() || 'US';
+          const params = new URLSearchParams({
+            payment_country: paymentCountry,
+          });
+          const res = await fetch(`/pay/fill-address?${params.toString()}`, {
+            method: 'GET',
+            cache: 'no-store',
+            headers: {
+              'Accept': 'application/json',
+            },
+          });
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          const address = data.address || {};
+          payForm.querySelector('[name="payment_billing_name"]').value = address.person_name || '';
+          payForm.querySelector('[name="payment_billing_line1"]').value = address.street_address || '';
+          payForm.querySelector('[name="payment_billing_city"]').value = address.city || '';
+          payForm.querySelector('[name="payment_billing_state"]').value = address.state || '';
+          payForm.querySelector('[name="payment_billing_postal_code"]').value = address.postal_code || '';
+        } catch (e) {
+          showErrorDialog(`自动地址填充失败: ${e?.message || e}`);
+        }
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+version: '3.9'
+
+services:
+  register-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auto-cpa-register
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    working_dir: /app
+    command: ["uvicorn", "register_web:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./config.json:/app/config.json
+      - ./templates:/app/templates
+      - ./codex_tokens:/app/codex_tokens
+      - ./registered_accounts.txt:/app/registered_accounts.txt
+      - ./ak.txt:/app/ak.txt
+      - ./rk.txt:/app/rk.txt
+      - ./zhuce5_cfmail_accounts.json:/app/zhuce5_cfmail_accounts.json
+      - ./accounts.db:/app/accounts.db
+    environment:
+      TZ: Asia/Shanghai
