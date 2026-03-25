@@ -351,3 +351,4 @@ python export_cpa.py --all
 
 - 不要在公开仓库提交真实 `upload_api_token`
 - 不要在公开仓库提交真实卡信息、OAuth token、SQLite 账号库数据
+- 项目当前以 [`config.json`](config.json) / [`config.json.example`](config.json.example) 作为配置来源，不依赖 [`.env`](.env)

@@ -200,25 +200,6 @@
           </div>
 
           <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
-              <select name="payment_country" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
-                {% for country in ['US', 'UK'] %}
-                <option value="{{ country }}" {% if state.last_pay_form.payment_country == country %}selected{% endif %}>{{ country }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-slate-700 mb-1">货币</label>
-              <select name="payment_currency" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
-                {% for currency in ['USD', 'GBP'] %}
-                <option value="{{ currency }}" {% if state.last_pay_form.payment_currency == currency %}selected{% endif %}>{{ currency }}</option>
-                {% endfor %}
-              </select>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3">
             <div class="col-span-2">
               <label class="block text-xs font-medium text-slate-700 mb-1">卡号</label>
               <input name="payment_card_number" value="{{ state.last_pay_form.payment_card_number }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
@@ -268,13 +249,22 @@
                 <label class="block text-xs font-medium text-slate-700 mb-1">州/省</label>
                 <input name="payment_billing_state" value="{{ state.last_pay_form.payment_billing_state }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
               </div>
-              <div class="col-span-2">
-                <label class="block text-xs font-medium text-slate-700 mb-1">邮编</label>
-                <input name="payment_billing_postal_code" value="{{ state.last_pay_form.payment_billing_postal_code }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
-              </div>
             </div>
           </div>
-
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
+              <select name="payment_country" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                {% for country in ['US', 'UK'] %}
+                <option value="{{ country }}" {% if state.last_pay_form.payment_country == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">邮编</label>
+              <input name="payment_billing_postal_code" value="{{ state.last_pay_form.payment_billing_postal_code }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            </div>
+          </div>
           <div class="grid grid-cols-3 gap-3">
             <button type="submit" formaction="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-save mr-2"></i>保存配置

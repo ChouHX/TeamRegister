@@ -43,7 +43,6 @@ def load_config() -> dict[str, Any]:
     defaults = {
         "proxy": "http://127.0.0.1:7890",
         "payment_country": "US",
-        "payment_currency": "USD",
         "payment_user_agent_override": "",
         "payment_time_on_page_min_ms": 15000,
         "payment_time_on_page_max_ms": 45000,
@@ -333,7 +332,7 @@ class PaymentBinder:
             },
             "billing_details": {
                 "country": str(self.config.get("payment_country", "JP") or "JP").upper(),
-                "currency": str(self.config.get("payment_currency", "JPY") or "JPY").upper(),
+                "currency": "USD" if str(self.config.get("payment_country", "US") or "US").upper() == "US" else "GBP",
             },
             "cancel_url": DEFAULT_PAYMENT_CANCEL_URL,
             "checkout_ui_mode": DEFAULT_PAYMENT_CHECKOUT_UI_MODE,

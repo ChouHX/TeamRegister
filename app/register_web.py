@@ -180,7 +180,6 @@ def _save_current_config(form: dict[str, str]) -> None:
             "cpa_cleanup_enabled": form.get("cpa_cleanup_enabled", str(current.get("cpa_cleanup_enabled", False))).lower() == "true",
             "cpa_upload_every_n": max(1, int(form.get("cpa_upload_every_n", current.get("cpa_upload_every_n", 3)) or 3)),
             "payment_country": form.get("payment_country", current.get("payment_country", "US")).strip(),
-            "payment_currency": form.get("payment_currency", current.get("payment_currency", "USD")).strip(),
         }
     )
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -502,7 +501,6 @@ def save_pay_config(
     pay_email: str = Form(""),
     proxy: str = Form(""),
     payment_country: str = Form("US"),
-    payment_currency: str = Form("USD"),
     payment_card_number: str = Form(""),
     payment_card_exp_month: str = Form(""),
     payment_card_exp_year: str = Form(""),
@@ -518,7 +516,6 @@ def save_pay_config(
         "pay_email": pay_email,
         "proxy": proxy,
         "payment_country": payment_country,
-        "payment_currency": payment_currency,
         "payment_card_number": payment_card_number,
         "payment_card_exp_month": payment_card_exp_month,
         "payment_card_exp_year": payment_card_exp_year,
@@ -546,7 +543,6 @@ def start_pay(
     pay_email: str = Form(""),
     proxy: str = Form(""),
     payment_country: str = Form("US"),
-    payment_currency: str = Form("USD"),
     payment_card_number: str = Form(""),
     payment_card_exp_month: str = Form(""),
     payment_card_exp_year: str = Form(""),
@@ -562,7 +558,6 @@ def start_pay(
         "pay_email": pay_email,
         "proxy": proxy,
         "payment_country": payment_country,
-        "payment_currency": payment_currency,
         "payment_card_number": payment_card_number,
         "payment_card_exp_month": payment_card_exp_month,
         "payment_card_exp_year": payment_card_exp_year,
