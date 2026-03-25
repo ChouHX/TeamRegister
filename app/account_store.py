@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import sqlite3
 import zipfile
@@ -8,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "accounts.db"
 EXPORT_DIR = BASE_DIR / "exports"
 

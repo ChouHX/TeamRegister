@@ -20,9 +20,9 @@ from typing import Any, Optional
 
 from curl_cffi import requests as curl_requests
 
-from account_store import AccountStore
+from app.account_store import AccountStore
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / "config.json"
 ACCOUNTS_DIR = BASE_DIR / "codex_tokens"
 CHATGPT_BASE = "https://chatgpt.com"

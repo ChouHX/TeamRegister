@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 
 from curl_cffi import requests as curl_requests
 
-from account_store import AccountStore
+from app.account_store import AccountStore
 
 # ================= 加载配置 =================
 def _load_config():

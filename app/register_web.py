@@ -7,24 +7,20 @@ from contextlib import redirect_stdout, redirect_stderr
 from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlencode
-from urllib.request import ProxyHandler, Request as UrlRequest, build_opener
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from curl_cffi import requests as curl_requests
 
-import ncs_register
-import payment_bind_app
-from account_store import AccountStore
+from app import ncs_register, payment_bind_app
+from app.account_store import AccountStore
+from app.address_generator import generate_billing_address
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 CONFIG_PATH = BASE_DIR / "config.json"
-ADDRESS_API = "https://smartfake.vercel.app/api/address"
 ACCOUNT_STORE = AccountStore()
 
 app = FastAPI(title="ChatGPT 注册面板")
@@ -202,38 +198,19 @@ def _list_account_options() -> list[dict[str, str]]:
 
 
 def _fetch_random_address(country_code: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    code = str(country_code or "US").strip() or "US"
-    request_url = f"{ADDRESS_API}?{urlencode({'code': code})}"
-
+    code = str(country_code or "US").strip().upper() or "US"
     try:
-        opener = build_opener(ProxyHandler({}))
-        req = UrlRequest(
-            request_url,
-            headers={
-                "Accept": "application/json,text/plain,*/*",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-                "Referer": "https://smartfake.vercel.app/",
-                "Origin": "https://smartfake.vercel.app",
-            },
-            method="GET",
-        )
-        with opener.open(req, timeout=6) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            body_preview = raw[:300].replace("\n", " ")
-            with STATE.lock:
-                STATE.last_output += (
-                    f"\n[PAY] 地址接口响应: country={code}, status={getattr(resp, 'status', 200)}, "
-                    f"body={body_preview or '-'}\n"
-                )
-            data = json.loads(raw) if raw else {}
-            if isinstance(data, dict):
-                return data
+        address = generate_billing_address(code)
+        with STATE.lock:
+            STATE.last_output += (
+                f"\n[PAY] 本地地址生成: country={code}, city={str(address.get('city') or '-')}, "
+                f"state={str(address.get('state') or '-')}, postal_code={str(address.get('postal_code') or '-')}\n"
+            )
+        return address
     except Exception as exc:
         with STATE.lock:
-            STATE.last_output += f"\n[PAY] 地址接口异常: country={code}, error={exc}\n"
-
-    return result
+            STATE.last_output += f"\n[PAY] 本地地址生成异常: country={code}, error={exc}\n"
+        return {}
 
 
 def _render_index(request: Request, *, active_tab: str = "register") -> HTMLResponse:
@@ -624,7 +601,7 @@ def fill_pay_address(
     with STATE.lock:
         STATE.last_output += (
             f"\n[PAY] 自动地址获取: country={payment_country or '-'}"
-            f", city={str(address.get('city') or '-')}, state={str(address.get('state') or '-')}"
+            f", city={str(address.get('city') or '-')}, state={str(address.get('state') or '-') }"
             f", postal_code={str(address.get('postal_code') or '-')}\n"
         )
     return JSONResponse(address)

@@ -11,13 +11,20 @@
 
 ## 目录结构
 
-- `ncs_register.py`：主注册脚本（支持并发、OAuth、分批上传 CPA）
-- `register_web.py`：基于 FastAPI 的注册管理界面
-- `templates/register.html`：注册页面模板（TailwindCSS + Font Awesome CDN）
-- `payment_bind_app.py`：独立绑卡 CLI 工具（基于 `codex_tokens/*.json` 选择账号并执行绑卡）
-- `auto_scheduler.py`：自动调度器（定时检测 + 自动触发注册）
-- `config.json`：项目运行配置
-- `zhuce5_cfmail_accounts.json`：CF 自建邮箱配置（仅 `mail_provider=cfmail` 时使用）
+- [`app/`](app)
+  - [`app/register_web.py`](app/register_web.py)：FastAPI Web 主入口
+  - [`app/ncs_register.py`](app/ncs_register.py)：主注册脚本核心实现
+  - [`app/payment_bind_app.py`](app/payment_bind_app.py)：独立绑卡 CLI 核心实现
+  - [`app/account_store.py`](app/account_store.py)：SQLite 账号存储层
+  - [`app/address_generator.py`](app/address_generator.py)：本地账单地址生成器（当前支持 `US` / `UK`）
+- [`register_web.py`](register_web.py)：兼容入口，转发到 [`app.register_web`](app/register_web.py)
+- [`ncs_register.py`](ncs_register.py)：兼容入口，转发到 [`app.ncs_register`](app/ncs_register.py)
+- [`payment_bind_app.py`](payment_bind_app.py)：兼容入口，转发到 [`app.payment_bind_app`](app/payment_bind_app.py)
+- [`account_store.py`](account_store.py)：兼容入口，转发到 [`app.account_store`](app/account_store.py)
+- [`templates/register.html`](templates/register.html)：注册页面模板（TailwindCSS + Font Awesome CDN）
+- [`auto_scheduler.py`](auto_scheduler.py)：自动调度器（定时检测 + 自动触发注册）
+- [`config.json`](config.json)：项目运行配置
+- [`zhuce5_cfmail_accounts.json`](zhuce5_cfmail_accounts.json)：CF 自建邮箱配置（仅 `mail_provider=cfmail` 时使用）
 
 ---
 
@@ -96,6 +103,12 @@ LaMail 对应文档：`https://maliapi.215.im/v1/llms.txt`
 python3 ncs_register.py
 ```
 
+或直接使用新结构入口：
+
+```bash
+python3 -m app.ncs_register
+```
+
 运行时交互项包括：
 
 1. 代理确认
@@ -114,7 +127,7 @@ python3 ncs_register.py
 启动命令：
 
 ```bash
-uvicorn register_web:app --reload
+uvicorn app.register_web:app --reload
 ```
 
 默认访问地址：
@@ -209,7 +222,7 @@ docker compose exec register-web bash
 ## 独立绑卡 CLI 工具
 
 ```bash
-python3 payment_bind_app.py
+python3 -m app.payment_bind_app
 ```
 
 当前优先从 SQLite 账号库 [`accounts.db`](account_store.py) 读取账号；如果数据库中没有记录，再回退读取本地旧的 [`codex_tokens/*.json`](codex_tokens/jl0ho19n@xcmt.online.json)。

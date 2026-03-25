@@ -1,0 +1,1 @@
+"""TeamRegister application package."""

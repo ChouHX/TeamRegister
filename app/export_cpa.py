@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from account_store import AccountStore, EXPORT_DIR
+from app.account_store import AccountStore, EXPORT_DIR
 
 
 def main() -> int:

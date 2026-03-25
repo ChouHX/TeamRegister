@@ -201,7 +201,11 @@
 
           <div>
             <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
-            <input name="payment_country" value="{{ state.last_pay_form.payment_country }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+            <select name="payment_country" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+              {% for country in ['US', 'UK'] %}
+              <option value="{{ country }}" {% if state.last_pay_form.payment_country == country %}selected{% endif %}>{{ country }}</option>
+              {% endfor %}
+            </select>
           </div>
 
           <div class="grid grid-cols-2 gap-3">
@@ -211,11 +215,22 @@
             </div>
             <div>
               <label class="block text-xs font-medium text-slate-700 mb-1">到期月</label>
-              <input name="payment_card_exp_month" value="{{ state.last_pay_form.payment_card_exp_month }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              <select name="payment_card_exp_month" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                <option value="">请选择</option>
+                {% for month in range(1, 13) %}
+                {% set month_value = '%02d' % month %}
+                <option value="{{ month_value }}" {% if state.last_pay_form.payment_card_exp_month == month_value or state.last_pay_form.payment_card_exp_month == month|string %}selected{% endif %}>{{ month_value }}</option>
+                {% endfor %}
+              </select>
             </div>
             <div>
               <label class="block text-xs font-medium text-slate-700 mb-1">到期年</label>
-              <input name="payment_card_exp_year" value="{{ state.last_pay_form.payment_card_exp_year }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              <select name="payment_card_exp_year" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                <option value="">请选择</option>
+                {% for year in range(2025, 2036) %}
+                <option value="{{ year }}" {% if state.last_pay_form.payment_card_exp_year == year|string %}selected{% endif %}>{{ year }}</option>
+                {% endfor %}
+              </select>
             </div>
             <div class="col-span-2">
               <label class="block text-xs font-medium text-slate-700 mb-1">CVC</label>
@@ -223,17 +238,7 @@
             </div>
           </div>
 
-          <div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-500">
-            `payment_billing_email` 会根据所选账号自动填充；全局重试、停留时间等配置继续走 [`config.json`](config.json)。
-          </div>
 
-          <div>
-            <label class="block text-xs font-medium text-slate-700 mb-1">账单地址模式</label>
-            <select id="addressModeSelect" name="address_mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
-              <option value="auto" {% if state.last_pay_form.address_mode == 'auto' %}selected{% endif %}>自动生成地址</option>
-              <option value="manual" {% if state.last_pay_form.address_mode == 'manual' %}selected{% endif %}>手动填写地址</option>
-            </select>
-          </div>
 
           <div class="space-y-3" id="manualAddressSection">
             <div>
@@ -429,14 +434,6 @@
     }
 
     if (activeTab === 'pay') {
-      const addressModeSelect = document.getElementById('addressModeSelect');
-      const manualAddressSection = document.getElementById('manualAddressSection');
-      const toggleAddressMode = () => {
-        manualAddressSection.classList.toggle('hidden', addressModeSelect.value !== 'manual');
-      };
-      addressModeSelect?.addEventListener('change', toggleAddressMode);
-      toggleAddressMode();
-
       const fillBtn = document.getElementById('fillAddressBtn');
       const payForm = document.getElementById('payForm');
       fillBtn?.addEventListener('click', async () => {
@@ -455,8 +452,7 @@
           if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
           }
-          const data = await res.json();
-          const address = data.address || {};
+          const address = await res.json();
           payForm.querySelector('[name="payment_billing_name"]').value = address.person_name || '';
           payForm.querySelector('[name="payment_billing_line1"]').value = address.street_address || '';
           payForm.querySelector('[name="payment_billing_city"]').value = address.city || '';
