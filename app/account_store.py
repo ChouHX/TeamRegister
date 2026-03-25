@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "accounts.db"
-EXPORT_DIR = BASE_DIR / "exports"
+DATA_DIR = BASE_DIR / "data"
+DB_PATH = DATA_DIR / "accounts.db"
+EXPORT_DIR = DATA_DIR / "exports"
 
 
 @dataclass

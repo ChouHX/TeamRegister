@@ -171,18 +171,21 @@ http://127.0.0.1:8000
 
 ### 3. 默认挂载内容
 
-当前 [`docker-compose.yml`](docker-compose.yml) 已挂载：
+当前 [`docker-compose.yml`](docker-compose.yml) 只挂载两项：
 
 - [`config.json`](config.json)
-- [`templates/`](templates/register.html)
-- [`codex_tokens/`](codex_tokens)
-- [`accounts.db`](account_store.py)
-- [`registered_accounts.txt`](registered_accounts.txt)
-- [`ak.txt`](ak.txt)
-- [`rk.txt`](rk.txt)
-- [`zhuce5_cfmail_accounts.json`](zhuce5_cfmail_accounts.json)
+- [`data/`](data)
 
-这样容器重建后，配置、账号库、token 文件仍会保留在宿主机。
+其中 [`data/`](data) 统一承载运行数据，例如：
+
+- `accounts.db`
+- `exports/`
+- `codex_tokens/`
+- `ak.txt`
+- `rk.txt`
+- `registered_accounts.txt`
+
+这样容器重建后，配置与运行数据会统一保留在宿主机的 [`data/`](data) 目录中，不再需要分散挂载多个文件。
 
 ### 4. 常用命令
 

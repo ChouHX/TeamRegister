@@ -13,12 +13,6 @@ services:
     command: ["uvicorn", "app.register_web:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - ./config.json:/app/config.json
-      - ./templates:/app/templates
-      - ./codex_tokens:/app/codex_tokens
-      - ./registered_accounts.txt:/app/registered_accounts.txt
-      - ./ak.txt:/app/ak.txt
-      - ./rk.txt:/app/rk.txt
-      - ./zhuce5_cfmail_accounts.json:/app/zhuce5_cfmail_accounts.json
-      - ./accounts.db:/app/accounts.db
+      - ./data:/app/data
     environment:
       TZ: Asia/Shanghai

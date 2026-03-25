@@ -29,33 +29,22 @@ CHATGPT_BASE = "https://chatgpt.com"
 STRIPE_API = "https://api.stripe.com"
 STRIPE_METRICS_URL = "https://m.stripe.com/6"
 ACCOUNT_STORE = AccountStore()
+DEFAULT_PAYMENT_PLAN_NAME = "chatgptteamplan"
+DEFAULT_PAYMENT_WORKSPACE_NAME = "Artizancloud"
+DEFAULT_PAYMENT_PRICE_INTERVAL = "month"
+DEFAULT_PAYMENT_SEAT_QUANTITY = 5
+DEFAULT_PAYMENT_PROMO_CAMPAIGN_ID = "team-1-month-free"
+DEFAULT_PAYMENT_CANCEL_URL = "https://chatgpt.com/?promo_campaign=team1dollar#team-pricing"
+DEFAULT_PAYMENT_CHECKOUT_UI_MODE = "custom"
+DEFAULT_PAYMENT_REFERRER = "https://chatgpt.com/"
 
 
 def load_config() -> dict[str, Any]:
     defaults = {
         "proxy": "http://127.0.0.1:7890",
-        "payment_plan_name": "chatgptteamplan",
-        "payment_workspace_name": "Artizancloud",
-        "payment_price_interval": "month",
-        "payment_seat_quantity": 5,
-        "payment_country": "JP",
-        "payment_currency": "JPY",
-        "payment_promo_campaign_id": "team1dollar",
-        "payment_cancel_url": "https://chatgpt.com/?promo_campaign=team1dollar#team-pricing",
-        "payment_checkout_ui_mode": "custom",
-        "payment_card_number": "",
-        "payment_card_exp_month": "",
-        "payment_card_exp_year": "",
-        "payment_card_cvc": "",
-        "payment_billing_name": "",
-        "payment_billing_email": "",
-        "payment_billing_line1": "",
-        "payment_billing_city": "",
-        "payment_billing_state": "",
-        "payment_billing_postal_code": "",
-        "payment_billing_country": "JP",
+        "payment_country": "US",
+        "payment_currency": "USD",
         "payment_user_agent_override": "",
-        "payment_referrer": "https://chatgpt.com/",
         "payment_time_on_page_min_ms": 15000,
         "payment_time_on_page_max_ms": 45000,
         "payment_retry_enabled": True,
@@ -336,20 +325,20 @@ class PaymentBinder:
         self.log("开始创建 checkout session")
         ctx = self._payment_context()
         payload = {
-            "plan_name": self.config.get("payment_plan_name", "chatgptteamplan"),
+            "plan_name": DEFAULT_PAYMENT_PLAN_NAME,
             "team_plan_data": {
-                "workspace_name": self.config.get("payment_workspace_name", "Artizancloud"),
-                "price_interval": self.config.get("payment_price_interval", "month"),
-                "seat_quantity": int(self.config.get("payment_seat_quantity", 5) or 5),
+                "workspace_name": DEFAULT_PAYMENT_WORKSPACE_NAME,
+                "price_interval": DEFAULT_PAYMENT_PRICE_INTERVAL,
+                "seat_quantity": DEFAULT_PAYMENT_SEAT_QUANTITY,
             },
             "billing_details": {
                 "country": str(self.config.get("payment_country", "JP") or "JP").upper(),
                 "currency": str(self.config.get("payment_currency", "JPY") or "JPY").upper(),
             },
-            "cancel_url": self.config.get("payment_cancel_url", "https://chatgpt.com/?promo_campaign=team1dollar#team-pricing"),
-            "checkout_ui_mode": self.config.get("payment_checkout_ui_mode", "custom"),
+            "cancel_url": DEFAULT_PAYMENT_CANCEL_URL,
+            "checkout_ui_mode": DEFAULT_PAYMENT_CHECKOUT_UI_MODE,
         }
-        promo_campaign_id = str(self.config.get("payment_promo_campaign_id") or "").strip()
+        promo_campaign_id = DEFAULT_PAYMENT_PROMO_CAMPAIGN_ID
         if promo_campaign_id:
             payload["promo_campaign"] = {
                 "promo_campaign_id": promo_campaign_id,
@@ -360,7 +349,7 @@ class PaymentBinder:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ctx['access_token']}",
             "Origin": CHATGPT_BASE,
-            "Referer": str(self.config.get("payment_referrer") or "https://chatgpt.com/"),
+            "Referer": DEFAULT_PAYMENT_REFERRER,
             "User-Agent": self.ua,
             "oai-device-id": self.device_id,
             "openai-sentinel-token": ctx["sentinel_token"],
@@ -412,7 +401,7 @@ class PaymentBinder:
     def probe_checkout_page(self, checkout_url: str) -> dict[str, Any]:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": str(self.config.get("payment_referrer") or "https://chatgpt.com/"),
+            "Referer": DEFAULT_PAYMENT_REFERRER,
             "User-Agent": self.ua,
         }
         resp = self.session.get(
@@ -443,7 +432,7 @@ class PaymentBinder:
         headers = {
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://js.stripe.com",
-            "Referer": str(self.config.get("payment_referrer") or "https://chatgpt.com/"),
+            "Referer": DEFAULT_PAYMENT_REFERRER,
             "User-Agent": self.ua,
             "Accept-Language": "en-US,en;q=0.9",
             "sec-ch-ua": self.sec_ch_ua,
@@ -700,7 +689,7 @@ class PaymentBinder:
                 "muid": risk["muid"],
                 "sid": risk["sid"],
                 "payment_user_agent": self.payment_user_agent,
-                "referrer": str(self.config.get("payment_referrer") or "https://chatgpt.com/"),
+                "referrer": DEFAULT_PAYMENT_REFERRER,
                 "time_on_page": self.time_on_page,
             },
             "expected_payment_method_type": "card",
@@ -714,7 +703,7 @@ class PaymentBinder:
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Origin": "https://js.stripe.com",
-                "Referer": str(self.config.get("payment_referrer") or "https://chatgpt.com/"),
+                "Referer": DEFAULT_PAYMENT_REFERRER,
                 "User-Agent": self.ua,
             },
             timeout=45,

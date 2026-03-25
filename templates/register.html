@@ -199,13 +199,23 @@
             <input name="proxy" value="{{ state.last_pay_form.proxy }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
           </div>
 
-          <div>
-            <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
-            <select name="payment_country" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
-              {% for country in ['US', 'UK'] %}
-              <option value="{{ country }}" {% if state.last_pay_form.payment_country == country %}selected{% endif %}>{{ country }}</option>
-              {% endfor %}
-            </select>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">国家</label>
+              <select name="payment_country" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                {% for country in ['US', 'UK'] %}
+                <option value="{{ country }}" {% if state.last_pay_form.payment_country == country %}selected{% endif %}>{{ country }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-700 mb-1">货币</label>
+              <select name="payment_currency" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                {% for currency in ['USD', 'GBP'] %}
+                <option value="{{ currency }}" {% if state.last_pay_form.payment_currency == currency %}selected{% endif %}>{{ currency }}</option>
+                {% endfor %}
+              </select>
+            </div>
           </div>
 
           <div class="grid grid-cols-2 gap-3">
