@@ -211,9 +211,9 @@ def _normalize_upload_api_base(raw_url: str) -> str:
     value = str(raw_url or "").strip()
     if not value:
         return ""
-    parsed = ncs_register.urlparse(value)
-    if parsed.scheme and parsed.netloc:
-        return f"{parsed.scheme}://{parsed.netloc}"
+    normalized = ncs_register._normalize_management_api_root(value)
+    if normalized:
+        return f"{normalized.rstrip('/')}/auth-files"
     return value
 
 
@@ -301,6 +301,7 @@ def _account_summary(row: dict[str, Any]) -> dict[str, Any]:
         "last_refresh": str(row.get("last_refresh") or ""),
         "type": str(row.get("type") or "codex"),
         "access_token": str(row.get("access_token") or ""),
+        "tags": row.get("tags") if isinstance(row.get("tags"), list) else [],
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
         "has_refresh_token": bool(str(row.get("refresh_token") or "").strip()),
         "has_session_token": bool(str(row.get("session_token") or "").strip()),
@@ -857,8 +858,18 @@ def continue_pay_verification():
         result = dict(STATE.last_pay_result or {})
         if not verification.get("required"):
             return JSONResponse({"ok": False, "message": "当前没有待处理的人工验证任务"}, status_code=400)
+        access_token = str(STATE.last_pay_form.get("payment_access_token") or "").strip()
+        matched_email = ""
+        if access_token:
+            for row in ACCOUNT_STORE.list_accounts():
+                if str(row.get("access_token") or "").strip() == access_token:
+                    matched_email = str(row.get("email") or "").strip()
+                    break
+        if matched_email:
+            ACCOUNT_STORE.mark_account_team_enabled(matched_email)
+            result["team_tagged_email"] = matched_email
         verification["status"] = "manual_verification_acknowledged"
-        verification["message"] = "已确认人工验证完成，请直接使用当前生成的支付链接结果。"
+        verification["message"] = f"已确认人工验证完成{('，并已为账号打上 TEAM 标签' if matched_email else '')}。"
         result["verification"] = verification
         STATE.pay_verification = verification
         STATE.last_pay_result = result

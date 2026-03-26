@@ -30,6 +30,7 @@ class AccountRecord:
     last_refresh: str
     password: str = ""
     type: str = "codex"
+    tags: list[str] | None = None
 
 
 class AccountStore:
@@ -63,6 +64,7 @@ class AccountStore:
                     last_refresh TEXT NOT NULL DEFAULT '',
                     password TEXT NOT NULL DEFAULT '',
                     type TEXT NOT NULL DEFAULT 'codex',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
@@ -71,6 +73,8 @@ class AccountStore:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
             if "password" not in columns:
                 conn.execute("ALTER TABLE accounts ADD COLUMN password TEXT NOT NULL DEFAULT ''")
+            if "tags_json" not in columns:
+                conn.execute("ALTER TABLE accounts ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
             conn.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS trg_accounts_updated_at
@@ -90,8 +94,8 @@ class AccountStore:
                 INSERT INTO accounts (
                     email, account_id, access_token, refresh_token, id_token,
                     session_token, csrf_token, device_id, user_agent, sec_ch_ua,
-                    cookies_json, expired, last_refresh, password, type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cookies_json, expired, last_refresh, password, type, tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET
                     account_id=excluded.account_id,
                     access_token=excluded.access_token,
@@ -106,7 +110,8 @@ class AccountStore:
                     expired=excluded.expired,
                     last_refresh=excluded.last_refresh,
                     password=CASE WHEN excluded.password <> '' THEN excluded.password ELSE accounts.password END,
-                    type=excluded.type
+                    type=excluded.type,
+                    tags_json=excluded.tags_json
                 """,
                 (
                     record.email,
@@ -124,6 +129,7 @@ class AccountStore:
                     record.last_refresh,
                     record.password,
                     record.type,
+                    json.dumps(record.tags or [], ensure_ascii=False),
                 ),
             )
             conn.commit()
@@ -181,10 +187,45 @@ class AccountStore:
                 zf.writestr(f"{email}.json", payload)
         return zip_path
 
+    def mark_account_team_enabled(self, email: str) -> bool:
+        target = str(email or "").strip()
+        if not target:
+            return False
+        account = self.get_account(target)
+        if not account:
+            return False
+        tags = account.get("tags") if isinstance(account.get("tags"), list) else []
+        normalized = []
+        seen: set[str] = set()
+        for item in [*tags, "TEAM"]:
+            value = str(item or "").strip().upper()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE accounts SET tags_json = ? WHERE email = ?",
+                (json.dumps(normalized, ensure_ascii=False), target),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def _normalize_payload(self, payload: dict[str, Any]) -> AccountRecord:
         cookies = payload.get("cookies") or {}
         if not isinstance(cookies, dict):
             cookies = {}
+        tags = payload.get("tags") or []
+        if not isinstance(tags, list):
+            tags = []
+        normalized_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for item in tags:
+            value = str(item or "").strip().upper()
+            if not value or value in seen_tags:
+                continue
+            seen_tags.add(value)
+            normalized_tags.append(value)
         return AccountRecord(
             email=str(payload.get("email") or "").strip(),
             account_id=str(payload.get("account_id") or "").strip(),
@@ -201,6 +242,7 @@ class AccountStore:
             last_refresh=str(payload.get("last_refresh") or "").strip(),
             password=str(payload.get("password") or "").strip(),
             type=str(payload.get("type") or "codex").strip() or "codex",
+            tags=normalized_tags,
         )
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -211,6 +253,21 @@ class AccountStore:
                 cookies = {}
         except Exception:
             cookies = {}
+        tags_json = str(row["tags_json"] or "[]") if "tags_json" in row.keys() else "[]"
+        try:
+            tags = json.loads(tags_json)
+            if not isinstance(tags, list):
+                tags = []
+        except Exception:
+            tags = []
+        normalized_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for item in tags:
+            value = str(item or "").strip().upper()
+            if not value or value in seen_tags:
+                continue
+            seen_tags.add(value)
+            normalized_tags.append(value)
         return {
             "type": row["type"],
             "email": row["email"],
@@ -227,4 +284,5 @@ class AccountStore:
             "sec_ch_ua": row["sec_ch_ua"],
             "password": row["password"],
             "cookies": cookies,
+            "tags": normalized_tags,
         }
