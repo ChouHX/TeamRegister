@@ -510,25 +510,46 @@
       }
     }
 
+    function showDialogSafe(dialog) {
+      if (!dialog) return false;
+      try {
+        if (typeof dialog.showModal === 'function') {
+          if (!dialog.open) dialog.showModal();
+        } else {
+          dialog.setAttribute('open', 'open');
+          dialog.style.display = 'block';
+        }
+        return true;
+      } catch (error) {
+        dialog.setAttribute('open', 'open');
+        dialog.style.display = 'block';
+        dialog.classList.remove('hidden');
+        return false;
+      }
+    }
+
     async function openStripeVerificationDialog() {
       const dialog = document.getElementById('stripeVerificationDialog');
       const container = document.getElementById('stripeVerificationContainer');
       const meta = document.getElementById('stripeVerificationMeta');
       const publishableKey = (latestPayResult?.checkout?.publishable_key || '').trim();
       const clientSecret = (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim();
-      if (!dialog || !container) return;
-      container.textContent = '正在调用 Stripe 官方验证流程，请稍候…';
-      meta.textContent = `pk=${publishableKey ? `${publishableKey.slice(0, 18)}...` : '-'} | client_secret=${clientSecret ? `${clientSecret.slice(0, 24)}...` : '-'}`;
-      if (!publishableKey || !clientSecret) {
-        container.textContent = '缺少 Stripe 验证所需的 publishable_key 或 client_secret，无法在当前页面内嵌验证。';
-        if (!dialog.open) dialog.showModal();
+      if (!dialog || !container) {
+        showErrorDialog('未找到 Stripe 验证弹窗节点，无法显示验证窗口。');
         return;
       }
-      if (!dialog.open) dialog.showModal();
+      container.textContent = '正在调用 Stripe 官方验证流程，请稍候…';
+      meta.textContent = `pk=${publishableKey ? `${publishableKey.slice(0, 18)}...` : '-'} | client_secret=${clientSecret ? `${clientSecret.slice(0, 24)}...` : '-'}`;
+      showDialogSafe(dialog);
+      if (!publishableKey || !clientSecret) {
+        container.textContent = '缺少 Stripe 验证所需的 publishable_key 或 client_secret，无法在当前页面内嵌验证。';
+        return;
+      }
       try {
         const stripe = window.Stripe?.(publishableKey);
         if (!stripe) {
           container.textContent = 'Stripe SDK 初始化失败。';
+          showErrorDialog('Stripe SDK 初始化失败，window.Stripe 不可用。');
           return;
         }
         const result = await stripe.confirmCardSetup(clientSecret);
@@ -539,6 +560,7 @@
         container.textContent = 'Stripe 验证成功，已完成当前弹窗内验证。请点击“我已完成验证”继续后处理。';
       } catch (error) {
         container.textContent = `Stripe 验证执行失败: ${error?.message || error}`;
+        showErrorDialog(`Stripe 验证执行失败: ${error?.message || error}`);
       }
     }
 
@@ -856,8 +878,22 @@
         }
         openStripeVerificationDialog();
       });
-      closeStripeDialogBtn?.addEventListener('click', () => stripeVerificationDialog?.close());
-      closeStripeDialogFooterBtn?.addEventListener('click', () => stripeVerificationDialog?.close());
+      closeStripeDialogBtn?.addEventListener('click', () => {
+        if (typeof stripeVerificationDialog?.close === 'function') {
+          stripeVerificationDialog.close();
+        } else if (stripeVerificationDialog) {
+          stripeVerificationDialog.removeAttribute('open');
+          stripeVerificationDialog.style.display = 'none';
+        }
+      });
+      closeStripeDialogFooterBtn?.addEventListener('click', () => {
+        if (typeof stripeVerificationDialog?.close === 'function') {
+          stripeVerificationDialog.close();
+        } else if (stripeVerificationDialog) {
+          stripeVerificationDialog.removeAttribute('open');
+          stripeVerificationDialog.style.display = 'none';
+        }
+      });
       continueVerificationBtn?.addEventListener('click', async () => {
         try {
           const res = await fetch('/pay/verification/continue', {
