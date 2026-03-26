@@ -1084,24 +1084,50 @@ class PaymentBinder:
             guid = str(item.get("guid") or "")
             muid = str(item.get("muid") or "")
             sid = str(item.get("sid") or "")
+            guid_source = ""
+            muid_source = ""
+            sid_source = ""
+            if guid:
+                guid_source = f"{label.lower()}_6"
             if not guid:
                 m = re.search(r'"guid"\s*[:=]\s*"([^"]+)"', body_preview)
                 if m:
                     guid = m.group(1)
+                    guid_source = f"{label.lower()}_body"
             if not guid:
                 continue
             if not muid:
                 muid = self._cookie("__stripe_mid")
+                if muid:
+                    muid_source = "cookie"
+            else:
+                muid_source = f"{label.lower()}_6"
             if not sid:
                 sid = self._cookie("__stripe_sid")
+                if sid:
+                    sid_source = "cookie"
+            else:
+                sid_source = f"{label.lower()}_6"
             if not muid:
                 muid = str(uuid.uuid4())
+                muid_source = "uuid_fallback"
             if not sid:
                 sid = str(uuid.uuid4())
+                sid_source = "uuid_fallback"
             self.session.cookies.set("__stripe_mid", muid, domain="api.stripe.com")
             self.session.cookies.set("__stripe_sid", sid, domain="api.stripe.com")
-            self.log(f"获取风控成功: source={label} guid={guid[:12]}... muid={muid[:8]}... sid={sid[:8]}...")
-            return {"guid": guid, "muid": muid, "sid": sid}
+            self.log(
+                f"风控参数准备完成: guid={guid[:12]}... muid={muid[:8]}... sid={sid[:8]}... "
+                f"guid_source={guid_source or 'unknown'}"
+            )
+            return {
+                "guid": guid,
+                "muid": muid,
+                "sid": sid,
+                "guid_source": guid_source or "unknown",
+                "muid_source": muid_source or "unknown",
+                "sid_source": sid_source or "unknown",
+            }
 
         get_item = diag.get("get") or {}
         post_item = diag.get("post") or {}
@@ -1296,10 +1322,12 @@ class PaymentBinder:
                     checkout.get("expected_amount"),
                 )
                 confirm_summary = confirm.get("summary") if isinstance(confirm, dict) else {}
+                card_digits = re.sub(r"\D+", "", str(self.config.get("payment_card_number") or ""))
                 result = {
                     "email": self.account.get("email"),
                     "checkout_session_id": checkout["checkout_session_id"],
                     "card_mask": mask_card(str(self.config.get("payment_card_number") or "")),
+                    "card_bin": card_digits[:6] if len(card_digits) >= 6 else card_digits,
                     "attempt": attempt,
                     "attempts_total": attempts,
                     "retry_enabled": retry_enabled,
@@ -1307,11 +1335,13 @@ class PaymentBinder:
                     "checkout": {
                         "checkout_session_id": checkout["checkout_session_id"],
                         "publishable_key": checkout.get("publishable_key") or "",
+                        "publishable_key_prefix": str(checkout.get("publishable_key") or "")[:18],
                         "expected_amount": checkout.get("expected_amount"),
                         "checkout_url": checkout.get("checkout_url") or "",
                         "stripe_hosted_url": checkout.get("stripe_hosted_url") or "",
                         "status": str((checkout.get("raw") or {}).get("status") or ""),
                         "payment_status": str((checkout.get("raw") or {}).get("payment_status") or ""),
+                        "processor_entity": str((checkout.get("raw") or {}).get("processor_entity") or ""),
                         "billing_details": (checkout.get("raw") or {}).get("billing_details") or {},
                     },
                     "risk": risk,
@@ -1371,7 +1401,10 @@ class PaymentBinder:
                             "is_success": False,
                         },
                     }
-                    self.log("当前商户不支持协议直提卡号，已切换为 hosted page 模式返回结果")
+                    self.log(
+                        "当前商户不支持协议直提卡号，已切换为 hosted page 模式返回结果: "
+                        f"bin={result.get('card_bin') or '-'} pk={str((((checkout.get('publishable_key') if 'checkout' in locals() else '') or ''))[:18]) or '-'}"
+                    )
                     return result
                 errors.append(error_text)
                 if attempt >= attempts:
