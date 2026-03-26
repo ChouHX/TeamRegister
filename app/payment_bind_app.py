@@ -1233,7 +1233,13 @@ class PaymentBinder:
             data = resp.json()
         except Exception:
             raise RuntimeError(f"confirm 返回非 JSON: {resp.status_code} {resp.text[:250]}")
-        if resp.status_code >= 400 or data.get("error"):
+        error_obj = data.get("error") if isinstance(data.get("error"), dict) else {}
+        if resp.status_code >= 400 or error_obj:
+            error_message = str(error_obj.get("message") or "")
+            if "unsupported for publishable key tokenization" in error_message.lower():
+                raise RuntimeError(
+                    "confirm 失败: 当前商户不支持直接卡号协议提交，请改走 stripe_hosted_url 前端页完成支付/验证"
+                )
             raise RuntimeError(f"confirm 失败: {resp.status_code} {json.dumps(data, ensure_ascii=False)[:300]}")
         summary = self._summarize_confirm(data)
         self.log(
@@ -1331,6 +1337,39 @@ class PaymentBinder:
             except Exception as exc:
                 error_text = f"第 {attempt}/{attempts} 次失败: {exc}"
                 self.log(error_text)
+                if "不支持直接卡号协议提交" in str(exc):
+                    result = {
+                        "email": self.account.get("email"),
+                        "checkout_session_id": checkout.get("checkout_session_id") if 'checkout' in locals() else "",
+                        "card_mask": mask_card(str(self.config.get("payment_card_number") or "")),
+                        "attempt": attempt,
+                        "attempts_total": attempts,
+                        "retry_enabled": retry_enabled,
+                        "stripe_hosted_url": (checkout.get("stripe_hosted_url") if 'checkout' in locals() else "") or "",
+                        "checkout": {
+                            "checkout_session_id": (checkout.get("checkout_session_id") if 'checkout' in locals() else "") or "",
+                            "checkout_url": (checkout.get("checkout_url") if 'checkout' in locals() else "") or "",
+                            "stripe_hosted_url": (checkout.get("stripe_hosted_url") if 'checkout' in locals() else "") or "",
+                            "status": str(((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("status") or ""),
+                            "payment_status": str(((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("payment_status") or ""),
+                            "billing_details": (((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("billing_details") or {}),
+                        },
+                        "risk": risk if 'risk' in locals() else {},
+                        "confirm": {},
+                        "confirm_status": {
+                            "checkout_status": str(((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("status") or "open"),
+                            "payment_status": str(((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("payment_status") or "unpaid"),
+                            "setup_intent_status": "",
+                            "setup_intent_next_action": "hosted_page",
+                            "requires_action": True,
+                            "return_url": "",
+                            "final_state": "hosted_page_required",
+                            "final_message": "当前商户不支持直接卡号协议 confirm，请打开 stripe_hosted_url 在前端页面完成支付/验证",
+                            "is_success": False,
+                        },
+                    }
+                    self.log("当前商户不支持协议直提卡号，已切换为 hosted page 模式返回结果")
+                    return result
                 errors.append(error_text)
                 if attempt >= attempts:
                     raise RuntimeError("\n".join(errors))

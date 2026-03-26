@@ -1584,16 +1584,20 @@ class ChatGPTRegister:
 
     def _log(self, step, method, url, status, body=None):
         prefix = f"[{self.tag}] " if self.tag else ""
-        lines = [f"\n{'='*60}", f"{prefix}[Step] {step}",
-                 f"{prefix}[{method}] {url}", f"{prefix}[Status] {status}"]
-        if body:
-            try:
-                lines.append(f"{prefix}[Response] {json.dumps(body, indent=2, ensure_ascii=False)[:1000]}")
-            except Exception:
-                lines.append(f"{prefix}[Response] {str(body)[:1000]}")
-        lines.append(f"{'='*60}")
+        compact = f"{prefix}[阶段] {step} | {method} | status={status}"
+        if body and isinstance(body, dict):
+            page_type = str((body.get("page") or {}).get("type") or "").strip()
+            continue_url = str(body.get("continue_url") or body.get("redirect_url") or body.get("url") or "").strip()
+            error_obj = body.get("error") if isinstance(body.get("error"), dict) else {}
+            error_code = str(error_obj.get("code") or "").strip()
+            if page_type:
+                compact += f" | page={page_type}"
+            if continue_url:
+                compact += " | continue_url=yes"
+            if error_code:
+                compact += f" | error={error_code}"
         with _print_lock:
-            print("\n".join(lines))
+            print(compact)
 
     def _print(self, msg):
         prefix = f"[{self.tag}] " if self.tag else ""
@@ -3383,14 +3387,8 @@ def _register_one(idx, total, proxy, output_file):
         birthdate = _random_birthdate()
 
         with _print_lock:
-            print(f"\n{'=' * 60}")
-            print(f"  [{idx}/{total}] 注册: {email}")
-            print(f"  邮箱服务: {provider}")
-            print(f"  ChatGPT密码: {chatgpt_password}")
-            if email_pwd:
-                print(f"  邮箱密码: {email_pwd}")
-            print(f"  姓名: {name} | 生日: {birthdate}")
-            print(f"{'=' * 60}")
+            print(f"\n[开始] [{idx}/{total}] 注册账号: {email} | provider={provider}")
+            print(f"[资料] 姓名={name} | 生日={birthdate}")
 
         # 执行注册流程
         reg.run_register(email, chatgpt_password, name, birthdate, mail_token, provider=provider)
@@ -3424,7 +3422,7 @@ def _register_one(idx, total, proxy, output_file):
                 out.write(line)
 
         with _print_lock:
-            print(f"\n[OK] [{tag}] {email} 注册成功!")
+            print(f"\n[OK] [{tag}] {email} 注册成功 | oauth={'ok' if oauth_ok else 'fail'}")
         return True, email, None
 
     except Exception as e:
