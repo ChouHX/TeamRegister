@@ -871,6 +871,41 @@ class PaymentBinder:
     def _extract_amount_from_payload(self, payload: Any) -> Optional[int]:
         return self._extract_expected_amount(payload)
 
+    def _extract_hcaptcha_params(self, html: str) -> dict[str, Any]:
+        text = str(html or "")
+        if not text:
+            return {}
+
+        def _match(pattern: str) -> str:
+            m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            return str((m.group(1) if m else "") or "").strip()
+
+        sitekey = (
+            _match(r'data-sitekey=["\']([^"\']+)["\']')
+            or _match(r'"sitekey"\s*:\s*"([^"]+)"')
+            or _match(r'"siteKey"\s*:\s*"([^"]+)"')
+        )
+        rqdata = (
+            _match(r'data-rqdata=["\']([^"\']+)["\']')
+            or _match(r'"rqdata"\s*:\s*"([^"]+)"')
+        )
+        iframe_src = _match(r'<iframe[^>]+src=["\']([^"\']*hcaptcha[^"\']*)["\']')
+        form_action = _match(r'<form[^>]+action=["\']([^"\']+)["\']')
+        container_id = _match(r'<div[^>]+id=["\']([^"\']+)["\'][^>]+data-sitekey=')
+        has_hcaptcha = "hcaptcha" in text.lower() or bool(sitekey) or bool(iframe_src)
+        if not has_hcaptcha:
+            return {}
+        return {
+            "provider": "hcaptcha",
+            "sitekey": sitekey,
+            "rqdata": rqdata,
+            "iframe_src": iframe_src,
+            "form_action": form_action,
+            "container_id": container_id,
+            "script_src": _match(r'<script[^>]+src=["\']([^"\']*hcaptcha[^"\']*)["\']'),
+            "html_snippet": text[:4000],
+        }
+
     def probe_checkout_page(self, checkout_url: str) -> dict[str, Any]:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -888,6 +923,12 @@ class PaymentBinder:
         preview = body[:1200].replace("\n", " ").replace("\r", " ")
         publishable_key = self._extract_publishable_key(body)
         expected_amount = self._extract_amount_from_payload(body)
+        hcaptcha = self._extract_hcaptcha_params(body)
+        if hcaptcha:
+            self.log(
+                f"从 checkout 页面提取到 hCaptcha: sitekey={(hcaptcha.get('sitekey') or '-')[:24]}... "
+                f"iframe={'yes' if hcaptcha.get('iframe_src') else 'no'}"
+            )
         return {
             "final_url": str(getattr(resp, "url", "") or ""),
             "status": resp.status_code,
@@ -895,6 +936,7 @@ class PaymentBinder:
             "body_preview": preview,
             "publishable_key": publishable_key,
             "expected_amount": expected_amount,
+            "hcaptcha": hcaptcha,
         }
 
     def fetch_checkout_amount_details(self, checkout_session_id: str) -> dict[str, Any]:
@@ -1386,6 +1428,7 @@ class PaymentBinder:
                     confirm_summary=confirm_summary,
                 )
                 if result["confirm_status"]["requires_action"]:
+                    hcaptcha = page_probe.get("hcaptcha") if isinstance(page_probe.get("hcaptcha"), dict) else {}
                     verification_url = (
                         result["confirm_status"].get("setup_intent_next_action_url")
                         or result["confirm_status"].get("return_url")
@@ -1397,13 +1440,16 @@ class PaymentBinder:
                         "required": True,
                         "status": "awaiting_human_verification",
                         "reason": result["confirm_status"].get("setup_intent_next_action") or "requires_action",
-                        "message": "检测到支付验证页，请在前端打开验证链接手动完成验证后，再继续后处理。",
+                        "message": "检测到支付验证页，请在当前页面内嵌显示 hCaptcha 组件后手动完成验证。",
                         "verification_url": verification_url,
+                        "hcaptcha": hcaptcha,
+                        "render_mode": "inline_dialog" if hcaptcha else "external_link",
                     }
                     self.log(
                         "检测到需要人工验证: "
                         f"reason={result['verification']['reason']} "
-                        f"verification_url={verification_url or '-'}"
+                        f"render_mode={result['verification']['render_mode']} "
+                        f"sitekey={(hcaptcha.get('sitekey') or '-')[:24]}..."
                     )
                 self.log(
                     "当前 confirm 后状态: "
