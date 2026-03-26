@@ -90,7 +90,8 @@ def _load_config():
         "payment_time_on_page_max_ms": 45000,
     }
 
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(base_dir, "config.json")
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
@@ -825,7 +826,7 @@ def _save_codex_tokens(email: str, tokens: dict, register=None):
         "cookies": cookies,
     }
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     token_dir = TOKEN_JSON_DIR if os.path.isabs(TOKEN_JSON_DIR) else os.path.join(base_dir, TOKEN_JSON_DIR)
     os.makedirs(token_dir, exist_ok=True)
     token_path = os.path.join(token_dir, f"{email}.json")
@@ -948,7 +949,7 @@ def _flush_cpa_upload_queue(force: bool = False):
 def _enqueue_tokens_for_cpa(limit: int | None = None) -> int:
     if not UPLOAD_API_URL:
         return 0
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     token_dir = TOKEN_JSON_DIR if os.path.isabs(TOKEN_JSON_DIR) else os.path.join(base_dir, TOKEN_JSON_DIR)
     if not os.path.isdir(token_dir):
         return 0

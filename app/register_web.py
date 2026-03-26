@@ -213,7 +213,17 @@ def _fetch_random_address(country_code: str) -> dict[str, Any]:
         return {}
 
 
+def _sync_forms_from_config_if_idle() -> None:
+    with STATE.lock:
+        if STATE.running:
+            return
+        STATE.last_form = RegisterState._default_register_form()
+        STATE.last_pay_form = RegisterState._default_pay_form()
+
+
 def _render_index(request: Request, *, active_tab: str = "register") -> HTMLResponse:
+    _reload_runtime_config()
+    _sync_forms_from_config_if_idle()
     cfg = _load_current_config()
     return templates.TemplateResponse(
         request,
