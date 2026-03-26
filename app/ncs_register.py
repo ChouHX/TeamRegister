@@ -2424,6 +2424,35 @@ class ChatGPTRegister:
         )
         return info
 
+    def establish_chatgpt_session_via_authenticated_auth(self, email: str) -> dict[str, Any]:
+        """复用已认证的 auth.openai.com 会话，补做 ChatGPT signin/openai -> callback。"""
+        self._print("[Session] 尝试复用已认证 auth 会话补做 ChatGPT callback...")
+        self.visit_homepage()
+        _random_delay(0.8, 1.8)
+        csrf = self.get_csrf()
+        _random_delay(0.8, 1.8)
+        auth_url = self.signin(email, csrf)
+        parsed = urlparse(auth_url)
+        chatgpt_state = parse_qs(parsed.query).get("state", [""])[0]
+        if not chatgpt_state:
+            raise RuntimeError("ChatGPT signin/openai 返回缺少 state")
+        _random_delay(1.0, 2.0)
+        auth_code = self._oauth_allow_redirect_extract_code(auth_url, referer=f"{self.BASE}/")
+        if not auth_code:
+            auth_code, _ = self._oauth_follow_for_code(auth_url, referer=f"{self.BASE}/")
+        if not auth_code:
+            raise RuntimeError("复用已认证 auth 会话仍未获取到 chatgpt callback code")
+        _random_delay(0.8, 1.6)
+        _, payload = self.complete_chatgpt_callback(auth_code, chatgpt_state)
+        _random_delay(0.6, 1.4)
+        session_info = self.ensure_chatgpt_session()
+        if not session_info.get("session_token"):
+            raise RuntimeError(
+                f"ChatGPT callback 仍未建立成功: final_url={str((payload or {}).get('final_url') or '')}"
+            )
+        self._print("[Session] 已通过已认证 auth 会话补齐 ChatGPT next-auth session")
+        return session_info
+
     def establish_chatgpt_web_session(self, email: str, password: str, mail_token: str | None = None,
                                       provider: str = "duckmail") -> dict[str, Any]:
         """通过 chatgpt.com 自身的 signin/openai 链建立 next-auth 登录态。"""
@@ -3319,13 +3348,17 @@ class ChatGPTRegister:
         self.session = oauth_session
         session_info = self.ensure_chatgpt_session()
         if not session_info.get("session_token"):
-            self._print("[OAuth] 直接补齐 ChatGPT 会话失败，回退到 ChatGPT 登录链建 session...")
-            session_info = self.establish_chatgpt_web_session(
-                email,
-                password,
-                mail_token=mail_token,
-                provider=provider,
-            )
+            try:
+                session_info = self.establish_chatgpt_session_via_authenticated_auth(email)
+            except Exception as exc:
+                self._print(f"[OAuth] 复用已认证 auth 会话补 session 失败: {exc}")
+                self._print("[OAuth] 直接补齐 ChatGPT 会话失败，回退到 ChatGPT 登录链建 session...")
+                session_info = self.establish_chatgpt_web_session(
+                    email,
+                    password,
+                    mail_token=mail_token,
+                    provider=provider,
+                )
         if session_info.get("session_token"):
             data["session_token"] = session_info.get("session_token")
         if session_info.get("csrf_token"):
