@@ -163,15 +163,15 @@
           </section>
 
           <div class="grid grid-cols-2 gap-3">
-            <button type="submit" formaction="/register/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
+            <button type="button" data-submit-action="/register/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-save mr-2"></i>保存配置
             </button>
             {% if state.running and active_tab == 'register' %}
-            <button type="submit" formaction="/register/stop" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2.5 transition">
+            <button type="button" data-submit-action="/register/stop" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-pause mr-2"></i>暂停注册
             </button>
             {% else %}
-            <button type="submit" formaction="/register/start" class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
+            <button type="button" data-submit-action="/register/start" class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
               <i class="fa fa-play mr-2"></i>启动注册
             </button>
             {% endif %}
@@ -266,13 +266,13 @@
             </div>
           </div>
           <div class="grid grid-cols-3 gap-3">
-            <button type="submit" formaction="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
+            <button type="button" data-submit-action="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-save mr-2"></i>保存配置
             </button>
             <button type="button" id="fillAddressBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-random mr-2"></i>自动地址
             </button>
-            <button type="submit" formaction="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
+            <button type="button" data-submit-action="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
               <i class="fa fa-credit-card mr-2"></i>{% if state.running %}Pay 任务执行中{% else %}启动 Pay{% endif %}
             </button>
           </div>
@@ -432,6 +432,18 @@
       switchSection();
       if (mailProviderSelect) switchMailSection(mailProviderSelect.value);
     }
+
+    document.querySelectorAll('button[data-submit-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        if (button.disabled) return;
+        const form = button.closest('form');
+        const action = button.getAttribute('data-submit-action');
+        if (!form || !action) return;
+        form.action = action;
+        form.method = 'post';
+        form.submit();
+      });
+    });
 
     if (activeTab === 'pay') {
       const fillBtn = document.getElementById('fillAddressBtn');
