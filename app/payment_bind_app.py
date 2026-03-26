@@ -1131,6 +1131,33 @@ class PaymentBinder:
             f"post.body_preview={post_item.get('body_preview', '')}"
         )
 
+    def _summarize_confirm(self, payload: dict[str, Any]) -> dict[str, Any]:
+        setup_intent = payload.get("setup_intent") if isinstance(payload.get("setup_intent"), dict) else {}
+        total_summary = payload.get("total_summary") if isinstance(payload.get("total_summary"), dict) else {}
+        customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
+        recurring_details = payload.get("recurring_details") if isinstance(payload.get("recurring_details"), dict) else {}
+        invoice = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+        summary = {
+            "session_id": str(payload.get("session_id") or payload.get("id") or ""),
+            "status": str(payload.get("status") or ""),
+            "payment_status": str(payload.get("payment_status") or ""),
+            "ui_mode": str(payload.get("ui_mode") or ""),
+            "currency": str(payload.get("currency") or ""),
+            "amount_subtotal": total_summary.get("subtotal"),
+            "amount_total": total_summary.get("total"),
+            "amount_due": total_summary.get("due"),
+            "customer_email": str(payload.get("customer_email") or customer.get("email") or ""),
+            "customer_name": str((customer.get("name") if isinstance(customer, dict) else "") or ""),
+            "setup_intent_status": str(setup_intent.get("status") or ""),
+            "setup_intent_next_action": str((setup_intent.get("next_action") or {}).get("type") or "") if isinstance(setup_intent, dict) else "",
+            "return_url": str(payload.get("return_url") or ""),
+            "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
+            "requires_action": str(setup_intent.get("status") or "") == "requires_action",
+            "trial_total": invoice.get("total") if isinstance(invoice, dict) else None,
+            "renewal_total": recurring_details.get("total") if isinstance(recurring_details, dict) else None,
+        }
+        return summary
+
     def confirm(self, checkout_session_id: str, client_secret: str, risk: dict[str, str], expected_amount: Optional[int]) -> dict[str, Any]:
         billing_email = str(self.config.get("payment_billing_email") or self.account.get("email") or "")
         publishable_key = str(self.stripe_publishable_key or "").strip()
@@ -1192,8 +1219,15 @@ class PaymentBinder:
             raise RuntimeError(f"confirm 返回非 JSON: {resp.status_code} {resp.text[:250]}")
         if resp.status_code >= 400 or data.get("error"):
             raise RuntimeError(f"confirm 失败: {resp.status_code} {json.dumps(data, ensure_ascii=False)[:300]}")
-        self.log("confirm 成功")
-        return data
+        summary = self._summarize_confirm(data)
+        self.log(
+            "confirm 成功: "
+            f"status={summary.get('status') or '-'} "
+            f"payment_status={summary.get('payment_status') or '-'} "
+            f"setup_intent_status={summary.get('setup_intent_status') or '-'} "
+            f"next_action={summary.get('setup_intent_next_action') or '-'}"
+        )
+        return {"raw": data, "summary": summary}
 
     def run(self) -> dict[str, Any]:
         for field in ("payment_card_number", "payment_card_exp_month", "payment_card_exp_year", "payment_card_cvc"):
@@ -1237,17 +1271,44 @@ class PaymentBinder:
                     risk,
                     checkout.get("expected_amount"),
                 )
-                return {
+                confirm_summary = confirm.get("summary") if isinstance(confirm, dict) else {}
+                result = {
                     "email": self.account.get("email"),
                     "checkout_session_id": checkout["checkout_session_id"],
                     "card_mask": mask_card(str(self.config.get("payment_card_number") or "")),
                     "attempt": attempt,
                     "attempts_total": attempts,
                     "retry_enabled": retry_enabled,
+                    "stripe_hosted_url": checkout.get("stripe_hosted_url") or "",
+                    "checkout": {
+                        "checkout_session_id": checkout["checkout_session_id"],
+                        "publishable_key": checkout.get("publishable_key") or "",
+                        "expected_amount": checkout.get("expected_amount"),
+                        "checkout_url": checkout.get("checkout_url") or "",
+                        "stripe_hosted_url": checkout.get("stripe_hosted_url") or "",
+                        "status": str((checkout.get("raw") or {}).get("status") or ""),
+                        "payment_status": str((checkout.get("raw") or {}).get("payment_status") or ""),
+                        "billing_details": (checkout.get("raw") or {}).get("billing_details") or {},
+                    },
                     "risk": risk,
-                    "checkout": checkout["raw"],
-                    "confirm": confirm,
+                    "confirm": confirm_summary,
+                    "confirm_status": {
+                        "checkout_status": confirm_summary.get("status") if isinstance(confirm_summary, dict) else "",
+                        "payment_status": confirm_summary.get("payment_status") if isinstance(confirm_summary, dict) else "",
+                        "setup_intent_status": confirm_summary.get("setup_intent_status") if isinstance(confirm_summary, dict) else "",
+                        "setup_intent_next_action": confirm_summary.get("setup_intent_next_action") if isinstance(confirm_summary, dict) else "",
+                        "requires_action": confirm_summary.get("requires_action") if isinstance(confirm_summary, dict) else False,
+                        "return_url": confirm_summary.get("return_url") if isinstance(confirm_summary, dict) else "",
+                    },
                 }
+                self.log(
+                    "当前 confirm 后状态: "
+                    f"checkout_status={result['confirm_status']['checkout_status'] or '-'} "
+                    f"payment_status={result['confirm_status']['payment_status'] or '-'} "
+                    f"setup_intent_status={result['confirm_status']['setup_intent_status'] or '-'} "
+                    f"requires_action={result['confirm_status']['requires_action']}"
+                )
+                return result
             except Exception as exc:
                 error_text = f"第 {attempt}/{attempts} 次失败: {exc}"
                 self.log(error_text)
