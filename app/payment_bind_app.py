@@ -1210,12 +1210,15 @@ class PaymentBinder:
                 "guid": risk["guid"],
                 "muid": risk["muid"],
                 "sid": risk["sid"],
+                "payment_user_agent": self.payment_user_agent,
+                "referrer": DEFAULT_PAYMENT_REFERRER,
+                "time_on_page": self.time_on_page,
             },
             "expected_payment_method_type": "card",
             "expected_amount": int(expected_amount),
             "key": publishable_key,
         }
-        self.log("confirm 使用精简字段模式：不主动上传 captcha/前端遥测类附加字段")
+        self.log("confirm 使用标准协议字段模式")
         resp = self.session.post(
             f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/confirm",
             data=flatten_form_data(form_payload),
