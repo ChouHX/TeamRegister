@@ -6,6 +6,7 @@
   <title>注册管理面板</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen">
   <div class="max-w-[1600px] mx-auto px-4 py-5">
@@ -385,21 +386,21 @@
             </div>
           </div>
 
-          <dialog id="hcaptchaDialog" class="rounded-2xl border border-amber-200 shadow-xl w-[min(760px,94vw)] p-0 backdrop:bg-slate-900/50">
+          <dialog id="stripeVerificationDialog" class="rounded-2xl border border-emerald-200 shadow-xl w-[min(760px,94vw)] p-0 backdrop:bg-slate-900/50">
             <div class="bg-white rounded-2xl p-4">
               <div class="flex items-center justify-between mb-3">
                 <div>
-                  <h3 class="text-base font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>hCaptcha 验证</h3>
-                  <p class="mt-1 text-xs text-slate-500">当前会尝试直接在弹窗中渲染提取到的 hCaptcha 组件参数。</p>
+                  <h3 class="text-base font-semibold text-emerald-800"><i class="fa fa-credit-card mr-2"></i>Stripe 验证</h3>
+                  <p class="mt-1 text-xs text-slate-500">使用 Stripe 官方 SDK 在当前页面弹窗内完成验证，不再跳转其他页面。</p>
                 </div>
-                <button type="button" id="closeHcaptchaDialogBtn" class="text-slate-400 hover:text-slate-600"><i class="fa fa-times"></i></button>
+                <button type="button" id="closeStripeDialogBtn" class="text-slate-400 hover:text-slate-600"><i class="fa fa-times"></i></button>
               </div>
               <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 min-h-[220px]">
-                <div id="hcaptchaInlineContainer" class="min-h-[120px] flex items-center justify-center text-sm text-slate-500">等待加载 hCaptcha 组件…</div>
-                <div id="hcaptchaInlineMeta" class="mt-3 text-[11px] text-slate-500 break-all"></div>
+                <div id="stripeVerificationContainer" class="min-h-[120px] flex items-center justify-center text-sm text-slate-500">等待调用 Stripe 官方验证流程…</div>
+                <div id="stripeVerificationMeta" class="mt-3 text-[11px] text-slate-500 break-all"></div>
               </div>
               <div class="mt-4 flex justify-end gap-2">
-                <button type="button" id="closeHcaptchaDialogFooterBtn" class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm px-4 py-2">关闭</button>
+                <button type="button" id="closeStripeDialogFooterBtn" class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm px-4 py-2">关闭</button>
               </div>
             </div>
           </dialog>
@@ -427,6 +428,7 @@
     let latestLogVersion = 0;
     let latestStatusVersion = 0;
     let latestPayVerification = null;
+    let latestPayResult = null;
     let autoOpenedVerificationKey = '';
 
     function isAutoScrollEnabled() {
@@ -508,59 +510,36 @@
       }
     }
 
-    function ensureHcaptchaScript(callback) {
-      if (window.hcaptcha && typeof callback === 'function') {
-        callback();
-        return;
-      }
-      let script = document.getElementById('hcaptchaApiScript');
-      if (!script) {
-        script = document.createElement('script');
-        script.id = 'hcaptchaApiScript';
-        script.src = 'https://js.hcaptcha.com/1/api.js?render=explicit';
-        script.async = true;
-        script.defer = true;
-        document.head.appendChild(script);
-      }
-      script.addEventListener('load', () => {
-        if (typeof callback === 'function') callback();
-      }, { once: true });
-    }
-
-    function openHcaptchaDialog(verification) {
-      const dialog = document.getElementById('hcaptchaDialog');
-      const container = document.getElementById('hcaptchaInlineContainer');
-      const meta = document.getElementById('hcaptchaInlineMeta');
-      const hcaptcha = verification?.hcaptcha || {};
+    async function openStripeVerificationDialog() {
+      const dialog = document.getElementById('stripeVerificationDialog');
+      const container = document.getElementById('stripeVerificationContainer');
+      const meta = document.getElementById('stripeVerificationMeta');
+      const publishableKey = (latestPayResult?.checkout?.publishable_key || '').trim();
+      const clientSecret = (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim();
       if (!dialog || !container) return;
-      container.innerHTML = '';
-      meta.textContent = '';
-      const sitekey = (hcaptcha.sitekey || '').trim();
-      if (!sitekey) {
-        container.textContent = '未能从 checkout 页面提取到 hCaptcha sitekey，暂时无法内嵌渲染。';
-        meta.textContent = hcaptcha.iframe_src || verification?.verification_url || '';
+      container.textContent = '正在调用 Stripe 官方验证流程，请稍候…';
+      meta.textContent = `pk=${publishableKey ? `${publishableKey.slice(0, 18)}...` : '-'} | client_secret=${clientSecret ? `${clientSecret.slice(0, 24)}...` : '-'}`;
+      if (!publishableKey || !clientSecret) {
+        container.textContent = '缺少 Stripe 验证所需的 publishable_key 或 client_secret，无法在当前页面内嵌验证。';
         if (!dialog.open) dialog.showModal();
         return;
       }
-      const target = document.createElement('div');
-      target.id = 'hcaptchaRenderTarget';
-      container.appendChild(target);
-      meta.textContent = `sitekey=${sitekey}${hcaptcha.rqdata ? ` | rqdata=${hcaptcha.rqdata}` : ''}`;
-      ensureHcaptchaScript(() => {
-        try {
-          if (window.hcaptcha && typeof window.hcaptcha.render === 'function') {
-            window.hcaptcha.render(target, {
-              sitekey,
-              ...(hcaptcha.rqdata ? { rqdata: hcaptcha.rqdata } : {}),
-            });
-          } else {
-            container.textContent = 'hCaptcha API 加载失败，无法渲染组件。';
-          }
-        } catch (error) {
-          container.textContent = `hCaptcha 组件渲染失败: ${error?.message || error}`;
-        }
-      });
       if (!dialog.open) dialog.showModal();
+      try {
+        const stripe = window.Stripe?.(publishableKey);
+        if (!stripe) {
+          container.textContent = 'Stripe SDK 初始化失败。';
+          return;
+        }
+        const result = await stripe.confirmCardSetup(clientSecret);
+        if (result?.error) {
+          container.textContent = `Stripe 验证未完成: ${result.error.message || 'unknown error'}`;
+          return;
+        }
+        container.textContent = 'Stripe 验证成功，已完成当前弹窗内验证。请点击“我已完成验证”继续后处理。';
+      } catch (error) {
+        container.textContent = `Stripe 验证执行失败: ${error?.message || error}`;
+      }
     }
 
     function updatePayVerificationPanel(verification) {
@@ -578,22 +557,23 @@
       panel.classList.toggle('hidden', !required);
       if (!required) return;
       const hcaptcha = latestPayVerification?.hcaptcha || {};
-      const renderMode = latestPayVerification?.render_mode || 'external_link';
+      const hasStripeSdkContext = !!((latestPayResult?.checkout?.publishable_key || '').trim() && (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim());
+      const renderMode = hasStripeSdkContext ? 'stripe_sdk_dialog' : (latestPayVerification?.render_mode || 'external_link');
       if (messageEl) {
-        messageEl.textContent = renderMode === 'inline_dialog'
-          ? (latestPayVerification.message || '系统会直接在当前页面弹窗内嵌显示 hCaptcha 验证组件。')
-          : '当前未提取到可内嵌的 hCaptcha 参数，不能打开其他页面，因为外部页面没有认证数据。';
+        messageEl.textContent = hasStripeSdkContext
+          ? '系统将使用 Stripe 官方 SDK 在当前页面弹窗内完成验证，不再打开其他页面。'
+          : '当前缺少 Stripe SDK 所需上下文，且不能打开其他页面，因为外部页面没有认证数据。';
       }
       if (statusEl) statusEl.textContent = latestPayVerification.status || '-';
       if (reasonEl) reasonEl.textContent = latestPayVerification.reason || '-';
       if (renderModeEl) renderModeEl.textContent = renderMode;
       if (sitekeyEl) sitekeyEl.textContent = hcaptcha.sitekey || '-';
-      if (openBtn) openBtn.disabled = renderMode !== 'inline_dialog';
+      if (openBtn) openBtn.disabled = !hasStripeSdkContext;
       if (continueBtn) continueBtn.disabled = latestPayVerification.status === 'manual_verification_acknowledged';
-      const verificationKey = `${latestPayVerification.status || ''}|${hcaptcha.sitekey || ''}|${latestPayVerification.reason || ''}`;
-      if (renderMode === 'inline_dialog' && latestPayVerification.status === 'awaiting_human_verification' && verificationKey && verificationKey !== autoOpenedVerificationKey) {
+      const verificationKey = `${latestPayVerification.status || ''}|${latestPayResult?.confirm_status?.setup_intent_client_secret || ''}|${latestPayVerification.reason || ''}`;
+      if (hasStripeSdkContext && latestPayVerification.status === 'awaiting_human_verification' && verificationKey && verificationKey !== autoOpenedVerificationKey) {
         autoOpenedVerificationKey = verificationKey;
-        requestAnimationFrame(() => openHcaptchaDialog(latestPayVerification));
+        requestAnimationFrame(() => openStripeVerificationDialog());
       }
     }
 
@@ -673,6 +653,7 @@
             if (typeof data.status_version === 'number') {
               latestStatusVersion = Math.max(latestStatusVersion, data.status_version);
             }
+            latestPayResult = data.pay_result || null;
             handleStatusMessage(data);
             return;
           }
@@ -684,6 +665,7 @@
             if (typeof data.status_version === 'number') {
               latestStatusVersion = Math.max(latestStatusVersion, data.status_version);
             }
+            latestPayResult = data.pay_result || latestPayResult;
             handleStatusMessage(data);
           }
         } catch (error) {
@@ -833,9 +815,9 @@
       const payForm = document.getElementById('payForm');
       const openVerificationBtn = document.getElementById('openVerificationBtn');
       const continueVerificationBtn = document.getElementById('continueVerificationBtn');
-      const hcaptchaDialog = document.getElementById('hcaptchaDialog');
-      const closeHcaptchaDialogBtn = document.getElementById('closeHcaptchaDialogBtn');
-      const closeHcaptchaDialogFooterBtn = document.getElementById('closeHcaptchaDialogFooterBtn');
+      const stripeVerificationDialog = document.getElementById('stripeVerificationDialog');
+      const closeStripeDialogBtn = document.getElementById('closeStripeDialogBtn');
+      const closeStripeDialogFooterBtn = document.getElementById('closeStripeDialogFooterBtn');
       fillBtn?.addEventListener('click', async () => {
         try {
           const paymentCountry = (payForm.querySelector('[name="payment_country"]')?.value || 'US').trim() || 'US';
@@ -867,15 +849,15 @@
           showErrorDialog('当前没有可用的验证码信息');
           return;
         }
-        const renderMode = latestPayVerification.render_mode || 'external_link';
-        if (renderMode !== 'inline_dialog') {
-          showErrorDialog('当前未提取到可内嵌的 hCaptcha 组件参数，不能再打开其他页面，因为外部页面没有认证数据。');
+        const hasStripeSdkContext = !!((latestPayResult?.checkout?.publishable_key || '').trim() && (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim());
+        if (!hasStripeSdkContext) {
+          showErrorDialog('当前缺少 Stripe SDK 所需上下文，不能再打开其他页面，因为外部页面没有认证数据。');
           return;
         }
-        openHcaptchaDialog(latestPayVerification);
+        openStripeVerificationDialog();
       });
-      closeHcaptchaDialogBtn?.addEventListener('click', () => hcaptchaDialog?.close());
-      closeHcaptchaDialogFooterBtn?.addEventListener('click', () => hcaptchaDialog?.close());
+      closeStripeDialogBtn?.addEventListener('click', () => stripeVerificationDialog?.close());
+      closeStripeDialogFooterBtn?.addEventListener('click', () => stripeVerificationDialog?.close());
       continueVerificationBtn?.addEventListener('click', async () => {
         try {
           const res = await fetch('/pay/verification/continue', {
