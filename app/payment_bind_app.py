@@ -774,7 +774,7 @@ class PaymentBinder:
             payload = resp.json() if resp.content else {}
         except Exception:
             payload = {"body_preview": body_preview}
-        self.log(f"payment_pages/init: status={resp.status_code} body={body_preview[:220]}")
+        self.log(f"payment_pages/init: status={resp.status_code}")
         if resp.status_code == 200 and isinstance(payload, dict):
             hosted_url = str(payload.get("stripe_hosted_url") or "").strip()
             if hosted_url:
@@ -842,14 +842,10 @@ class PaymentBinder:
         self.stripe_publishable_key = self._extract_publishable_key(data)
         expected_amount = self._extract_expected_amount(data)
         self.log(f"checkout 成功: checkout_session_id={checkout_session_id}")
-        self.log(f"checkout 顶层字段: {sorted(list(data.keys()))[:40]}")
-        self.log(f"checkout 原始响应预览: {json.dumps(data, ensure_ascii=False)[:1200]}")
         if self.stripe_publishable_key:
             self.log(f"提取到 publishable_key: {self.stripe_publishable_key[:18]}...")
         if expected_amount is not None:
             self.log(f"提取到 expected_amount: {expected_amount}")
-        else:
-            self.log("未从 checkout 响应中提取到 expected_amount")
         if not checkout_session_id:
             raise RuntimeError(f"checkout 响应缺少 checkout_session_id: {data}")
         checkout_url = f"{CHATGPT_BASE}/checkout/openai_llc/{checkout_session_id}"
@@ -1214,14 +1210,12 @@ class PaymentBinder:
                 "guid": risk["guid"],
                 "muid": risk["muid"],
                 "sid": risk["sid"],
-                "payment_user_agent": self.payment_user_agent,
-                "referrer": DEFAULT_PAYMENT_REFERRER,
-                "time_on_page": self.time_on_page,
             },
             "expected_payment_method_type": "card",
             "expected_amount": int(expected_amount),
             "key": publishable_key,
         }
+        self.log("confirm 使用精简字段模式：不主动上传 captcha/前端遥测类附加字段")
         resp = self.session.post(
             f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/confirm",
             data=flatten_form_data(form_payload),
@@ -1271,7 +1265,6 @@ class PaymentBinder:
                 self.log(f"第 {attempt}/{attempts} 次尝试开始")
                 checkout = self.create_checkout()
                 page_probe = self.probe_checkout_page(checkout["checkout_url"])
-                self.log(f"checkout 页面探测结果: {json.dumps(page_probe, ensure_ascii=False)[:1500]}")
                 if page_probe.get("publishable_key") and not checkout.get("publishable_key"):
                     checkout["publishable_key"] = page_probe.get("publishable_key")
                     self.stripe_publishable_key = str(page_probe.get("publishable_key") or "")
@@ -1281,7 +1274,6 @@ class PaymentBinder:
                     self.log(f"从 checkout 页面提取到 expected_amount={checkout['expected_amount']}")
                 if checkout.get("expected_amount") is None:
                     amount_probe = self.fetch_checkout_amount_details(checkout["checkout_session_id"])
-                    self.log(f"checkout 金额探测结果: {json.dumps(amount_probe, ensure_ascii=False)[:1500]}")
                     for item in amount_probe.get("requests", []):
                         if isinstance(item, dict) and item.get("expected_amount") is not None:
                             checkout["expected_amount"] = item.get("expected_amount")
