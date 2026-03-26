@@ -381,12 +381,32 @@
         {% endif %}
       </div>
 
-      {% if not accounts_fullscreen %}
+      {% if not accounts_fullscreen and active_tab == 'register' %}
       <div class="space-y-4">
         <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
           <div class="flex items-center justify-between mb-3 gap-4">
             <div class="flex items-center gap-3 min-w-0">
-              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-signal mr-2 text-slate-600"></i>任务状态</h2>
+              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-terminal mr-2 text-slate-600"></i>任务状态日志</h2>
+              <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap" data-status-badge>
+                <i class="fa fa-pause mr-2"></i>空闲
+              </span>
+            </div>
+            <label class="inline-flex items-center gap-2 text-[11px] text-slate-500 whitespace-nowrap select-none cursor-pointer">
+              <input type="checkbox" id="autoScrollToggle" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" checked />
+              <span>自动滚动日志</span>
+            </label>
+          </div>
+          <div class="rounded-xl bg-slate-950 text-slate-100 p-4 min-h-[620px] max-h-[75vh] overflow-auto" id="logViewport">
+            <pre class="whitespace-pre-wrap text-xs leading-5" data-log-container>{{ state.last_output if state.last_output else '暂无日志输出，启动任务后会在这里显示。' }}</pre>
+          </div>
+        </div>
+      </div>
+      {% elif not accounts_fullscreen and active_tab == 'pay' %}
+      <div class="space-y-4">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+          <div class="flex items-center justify-between mb-3 gap-4">
+            <div class="flex items-center gap-3 min-w-0">
+              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-signal mr-2 text-slate-600"></i>支付状态</h2>
               <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap" data-status-badge>
                 <i class="fa fa-pause mr-2"></i>空闲
               </span>
@@ -416,15 +436,66 @@
   <script>
     const activeTab = '{{ active_tab }}';
     const statusBadge = document.querySelector('[data-status-badge]');
+    const logContainer = document.querySelector('[data-log-container]');
+    const logViewport = document.getElementById('logViewport');
+    const autoScrollToggle = document.getElementById('autoScrollToggle');
+    const autoScrollStorageKey = 'registerPanelAutoScroll';
     let lastErrorText = '';
     const dismissedErrorStorageKey = 'registerPanelDismissedError';
     let ws = null;
     let wsReconnectTimer = null;
     let statusPollTimer = null;
+    let latestLogVersion = 0;
     let latestStatusVersion = 0;
     let latestPayVerification = null;
     let latestPayResult = null;
     let latestPayHostedPage = null;
+
+    function isAutoScrollEnabled() {
+      return !!autoScrollToggle?.checked;
+    }
+
+    function syncAutoScrollPreference() {
+      if (!autoScrollToggle) return;
+      const saved = window.localStorage.getItem(autoScrollStorageKey);
+      if (saved === 'false') {
+        autoScrollToggle.checked = false;
+      } else if (saved === 'true') {
+        autoScrollToggle.checked = true;
+      }
+      autoScrollToggle.addEventListener('change', () => {
+        window.localStorage.setItem(autoScrollStorageKey, autoScrollToggle.checked ? 'true' : 'false');
+        if (autoScrollToggle.checked && logViewport) {
+          logViewport.scrollTop = logViewport.scrollHeight;
+        }
+      });
+    }
+
+    function scrollLogToBottom(force = false) {
+      if (!logViewport) return;
+      if (force || isAutoScrollEnabled()) {
+        logViewport.scrollTop = logViewport.scrollHeight;
+      }
+    }
+
+    function appendLogChunk(chunk, version = null) {
+      if (!logContainer || !chunk) return;
+      const current = logContainer.textContent === '暂无日志输出，启动任务后会在这里显示。' ? '' : logContainer.textContent;
+      logContainer.textContent = current + chunk;
+      if (typeof version === 'number') {
+        latestLogVersion = Math.max(latestLogVersion, version);
+      }
+      requestAnimationFrame(() => scrollLogToBottom());
+    }
+
+    function setFullLog(text, version = null) {
+      if (!logContainer) return;
+      logContainer.textContent = text || '暂无日志输出，启动任务后会在这里显示。';
+      if (typeof version === 'number') {
+        latestLogVersion = Math.max(latestLogVersion, version);
+      }
+      requestAnimationFrame(() => scrollLogToBottom(true));
+    }
 
     function ensureErrorDialog() {
       let dialog = document.getElementById('errorDialog');
@@ -534,8 +605,10 @@
         window.sessionStorage.removeItem(dismissedErrorStorageKey);
       }
       updateStatusBadge(data);
-      updatePayVerificationPanel(data.pay_verification || null);
-      updatePayHostedPagePanel(data.pay_hosted_page || null);
+      if (activeTab === 'pay') {
+        updatePayVerificationPanel(data.pay_verification || null);
+        updatePayHostedPagePanel(data.pay_hosted_page || null);
+      }
     }
 
     async function pollStatusFallback() {
@@ -571,12 +644,17 @@
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'init') {
+            setFullLog(data.last_output || '', typeof data.log_version === 'number' ? data.log_version : null);
             if (typeof data.status_version === 'number') {
               latestStatusVersion = Math.max(latestStatusVersion, data.status_version);
             }
             latestPayResult = data.pay_result || null;
             latestPayHostedPage = data.pay_hosted_page || null;
             handleStatusMessage(data);
+            return;
+          }
+          if (data.type === 'log') {
+            appendLogChunk(data.chunk || '', typeof data.log_version === 'number' ? data.log_version : null);
             return;
           }
           if (data.type === 'status') {
@@ -609,6 +687,8 @@
       };
     }
 
+    syncAutoScrollPreference();
+    scrollLogToBottom(true);
     connectWebSocket();
     ensureStatusPolling();
     pollStatusFallback();
