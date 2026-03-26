@@ -2760,7 +2760,6 @@ class ChatGPTRegister:
 
         _random_delay(0.2, 0.5)
         self.callback()
-        self.ensure_chatgpt_session()
         return True
 
     def _decode_oauth_session_cookie(self):
@@ -3346,29 +3345,6 @@ class ChatGPTRegister:
             return None
 
         self.session = oauth_session
-        session_info = self.ensure_chatgpt_session()
-        if not session_info.get("session_token"):
-            try:
-                session_info = self.establish_chatgpt_session_via_authenticated_auth(email)
-            except Exception as exc:
-                self._print(f"[OAuth] 复用已认证 auth 会话补 session 失败: {exc}")
-                self._print("[OAuth] 直接补齐 ChatGPT 会话失败，回退到 ChatGPT 登录链建 session...")
-                session_info = self.establish_chatgpt_web_session(
-                    email,
-                    password,
-                    mail_token=mail_token,
-                    provider=provider,
-                )
-        if session_info.get("session_token"):
-            data["session_token"] = session_info.get("session_token")
-        if session_info.get("csrf_token"):
-            data["csrf_token"] = session_info.get("csrf_token")
-        if session_info.get("cookies"):
-            data["cookies"] = session_info.get("cookies")
-        if not data.get("access_token") and session_info.get("access_token"):
-            data["access_token"] = session_info.get("access_token")
-        if not data.get("session_token"):
-            raise RuntimeError("OAuth 成功，但未能建立 ChatGPT next-auth session，无法生成独立绑卡账号")
         self._print("[OAuth] Codex Token 获取成功")
         return data
 

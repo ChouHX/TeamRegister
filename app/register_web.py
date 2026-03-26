@@ -8,7 +8,7 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -43,6 +43,9 @@ class RegisterState:
         self.register_process: Optional[Process] = None
         self.register_log_thread: Optional[threading.Thread] = None
         self.register_queue: Optional[Queue] = None
+        self.log_version = 0
+        self.status_version = 0
+        self.ws_clients: set[WebSocket] = set()
 
     @staticmethod
     def _default_register_form() -> dict[str, str]:
@@ -104,6 +107,61 @@ class _QueueLogWriter:
 
 
 STATE = RegisterState()
+
+
+async def _broadcast_ws(message: dict[str, Any]) -> None:
+    stale: list[WebSocket] = []
+    clients = list(STATE.ws_clients)
+    for ws in clients:
+        try:
+            await ws.send_text(json.dumps(message, ensure_ascii=False))
+        except Exception:
+            stale.append(ws)
+    if stale:
+        with STATE.lock:
+            for ws in stale:
+                STATE.ws_clients.discard(ws)
+
+
+
+def _notify_status_update() -> None:
+    with STATE.lock:
+        STATE.status_version += 1
+        payload = {
+            "type": "status",
+            "running": STATE.running,
+            "current_task": STATE.current_task,
+            "last_error": STATE.last_error,
+            "last_success": STATE.last_success,
+            "status_version": STATE.status_version,
+        }
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_ws(payload))
+    except RuntimeError:
+        return
+
+
+
+def _append_output(message: str) -> None:
+    if not message:
+        return
+    with STATE.lock:
+        STATE.last_output += message
+        STATE.log_version += 1
+        payload = {
+            "type": "log",
+            "chunk": message,
+            "full": STATE.last_output,
+            "log_version": STATE.log_version,
+        }
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        loop.create_task(_broadcast_ws(payload))
+    except RuntimeError:
+        return
 
 
 def _load_current_config() -> dict[str, Any]:
@@ -304,8 +362,7 @@ def _watch_register_queue(queue: Queue, process: Process) -> None:
         item = queue.get()
         kind = item[0]
         if kind == "log":
-            with STATE.lock:
-                STATE.last_output += item[1]
+            _append_output(item[1])
             continue
         if kind == "done":
             with STATE.lock:
@@ -316,6 +373,7 @@ def _watch_register_queue(queue: Queue, process: Process) -> None:
                 STATE.register_process = None
                 STATE.register_queue = None
                 STATE.register_log_thread = None
+            _notify_status_update()
             if process.is_alive():
                 process.join(timeout=0.2)
             break
@@ -388,13 +446,13 @@ def _run_pay_job(*, pay_email: str, pay_form: dict[str, str]) -> None:
             STATE.current_task = ""
             STATE.last_error = error_text
             STATE.last_success = success
+        _notify_status_update()
 
 
 class _ImmediateQueue:
     def put(self, item: tuple[str, str]) -> None:
         if item[0] == "log":
-            with STATE.lock:
-                STATE.last_output += item[1]
+            _append_output(item[1])
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -412,8 +470,34 @@ def get_status():
                 "last_output": STATE.last_output,
                 "last_error": STATE.last_error,
                 "last_success": STATE.last_success,
+                "log_version": STATE.log_version,
+                "status_version": STATE.status_version,
             }
         )
+
+
+@app.websocket("/ws")
+async def websocket_status(websocket: WebSocket):
+    await websocket.accept()
+    with STATE.lock:
+        STATE.ws_clients.add(websocket)
+        init_payload = {
+            "type": "init",
+            "running": STATE.running,
+            "current_task": STATE.current_task,
+            "last_output": STATE.last_output,
+            "last_error": STATE.last_error,
+            "last_success": STATE.last_success,
+            "log_version": STATE.log_version,
+            "status_version": STATE.status_version,
+        }
+    await websocket.send_text(json.dumps(init_payload, ensure_ascii=False))
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        with STATE.lock:
+            STATE.ws_clients.discard(websocket)
 
 
 @app.post("/accounts/export")
@@ -555,13 +639,16 @@ def start_register(
         if STATE.running:
             STATE.last_error = "当前已有任务在执行，请等待完成后再启动新任务"
             STATE.last_form.update(form_data)
+            _notify_status_update()
             return RedirectResponse(url="/?tab=register", status_code=303)
         STATE.running = True
         STATE.current_task = "register"
         STATE.last_output = ""
         STATE.last_error = ""
         STATE.last_success = False
+        STATE.log_version += 1
         STATE.last_form.update(form_data)
+    _notify_status_update()
 
     queue: Queue = Queue()
     process = Process(
@@ -600,10 +687,11 @@ def stop_register_task():
             STATE.current_task = ""
             STATE.last_success = False
             STATE.last_error = "注册任务已被人工暂停/终止"
-            STATE.last_output += "\n[WEB] 已强制终止注册任务\n"
             STATE.register_process = None
             STATE.register_queue = None
             STATE.register_log_thread = None
+    _append_output("\n[WEB] 已强制终止注册任务\n")
+    _notify_status_update()
     return RedirectResponse(url="/?tab=register", status_code=303)
 
 
@@ -647,7 +735,8 @@ def save_pay_config(
         STATE.last_pay_form.update(pay_form)
         snapshot = dict(STATE.last_pay_form)
         STATE.last_error = ""
-        STATE.last_output += "\n[WEB] Pay 配置已保存\n"
+    _append_output("\n[WEB] Pay 配置已保存\n")
+    _notify_status_update()
     _save_pay_config(snapshot)
     _reload_runtime_config()
     return RedirectResponse(url="/?tab=pay", status_code=303)
@@ -692,13 +781,16 @@ def start_pay(
         if STATE.running:
             STATE.last_error = "当前已有任务在执行，请等待完成后再启动新任务"
             STATE.last_pay_form.update(pay_form)
+            _notify_status_update()
             return RedirectResponse(url="/?tab=pay", status_code=303)
         STATE.running = True
         STATE.current_task = "pay"
         STATE.last_output = ""
         STATE.last_error = ""
         STATE.last_success = False
+        STATE.log_version += 1
         STATE.last_pay_form.update(pay_form)
+    _notify_status_update()
 
     thread = threading.Thread(target=_run_pay_job, kwargs={"pay_email": pay_email, "pay_form": dict(STATE.last_pay_form)}, daemon=True)
     thread.start()

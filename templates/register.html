@@ -365,6 +365,8 @@
     const autoScrollStorageKey = 'registerPanelAutoScroll';
     let lastErrorText = '';
     const dismissedErrorStorageKey = 'registerPanelDismissedError';
+    let ws = null;
+    let wsReconnectTimer = null;
 
     function isAutoScrollEnabled() {
       return !!autoScrollToggle?.checked;
@@ -425,53 +427,95 @@
       if (!dialog.open) dialog.showModal();
     }
 
-    async function pollStatus() {
-      try {
-        const res = await fetch('/status', { cache: 'no-store' });
-        const data = await res.json();
-        if (logContainer) {
-          const nextText = data.last_output || '暂无日志输出，启动任务后会在这里显示。';
-          const changed = logContainer.textContent !== nextText;
-          logContainer.textContent = nextText;
-          if (changed) {
-            scrollLogToBottom();
-          }
-        }
-        const dismissedError = window.sessionStorage.getItem(dismissedErrorStorageKey) || '';
-        if (data.last_error && data.last_error !== lastErrorText) {
-          lastErrorText = data.last_error;
-          if (data.last_error !== dismissedError) {
-            showErrorDialog(data.last_error);
-          }
-        }
-        if (!data.last_error) {
-          lastErrorText = '';
-          window.sessionStorage.removeItem(dismissedErrorStorageKey);
-        }
-        if (statusBadge) {
-          if (data.running) {
-            statusBadge.className = 'inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
-            statusBadge.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>执行中';
-          } else if (data.last_success) {
-            statusBadge.className = 'inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
-            statusBadge.innerHTML = '<i class="fa fa-check mr-2"></i>最近一次成功';
-          } else if (data.last_error) {
-            statusBadge.className = 'inline-flex items-center rounded-full bg-rose-100 text-rose-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
-            statusBadge.innerHTML = '<i class="fa fa-times mr-2"></i>最近一次失败';
-          } else {
-            statusBadge.className = 'inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap';
-            statusBadge.innerHTML = '<i class="fa fa-pause mr-2"></i>空闲';
-          }
-        }
-      } catch (e) {
-        return;
+    function updateStatusBadge(data) {
+      if (!statusBadge) return;
+      if (data.running) {
+        statusBadge.className = 'inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+        statusBadge.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>执行中';
+      } else if (data.last_success) {
+        statusBadge.className = 'inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+        statusBadge.innerHTML = '<i class="fa fa-check mr-2"></i>最近一次成功';
+      } else if (data.last_error) {
+        statusBadge.className = 'inline-flex items-center rounded-full bg-rose-100 text-rose-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+        statusBadge.innerHTML = '<i class="fa fa-times mr-2"></i>最近一次失败';
+      } else {
+        statusBadge.className = 'inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap';
+        statusBadge.innerHTML = '<i class="fa fa-pause mr-2"></i>空闲';
       }
+    }
+
+    function handleStatusMessage(data) {
+      const dismissedError = window.sessionStorage.getItem(dismissedErrorStorageKey) || '';
+      if (data.last_error && data.last_error !== lastErrorText) {
+        lastErrorText = data.last_error;
+        if (data.last_error !== dismissedError) {
+          showErrorDialog(data.last_error);
+        }
+      }
+      if (!data.last_error) {
+        lastErrorText = '';
+        window.sessionStorage.removeItem(dismissedErrorStorageKey);
+      }
+      updateStatusBadge(data);
+    }
+
+    function appendLogChunk(chunk) {
+      if (!logContainer || !chunk) return;
+      const current = logContainer.textContent === '暂无日志输出，启动任务后会在这里显示。' ? '' : logContainer.textContent;
+      logContainer.textContent = current + chunk;
+      scrollLogToBottom();
+    }
+
+    function setFullLog(text) {
+      if (!logContainer) return;
+      logContainer.textContent = text || '暂无日志输出，启动任务后会在这里显示。';
+      scrollLogToBottom(true);
+    }
+
+    function connectWebSocket() {
+      if (!logContainer) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'init') {
+            setFullLog(data.last_output || '');
+            handleStatusMessage(data);
+            return;
+          }
+          if (data.type === 'log') {
+            appendLogChunk(data.chunk || '');
+            return;
+          }
+          if (data.type === 'status') {
+            handleStatusMessage(data);
+          }
+        } catch (error) {
+          return;
+        }
+      };
+      ws.onopen = () => {
+        if (wsReconnectTimer) {
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = null;
+        }
+      };
+      ws.onclose = () => {
+        wsReconnectTimer = window.setTimeout(connectWebSocket, 1500);
+      };
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch (error) {
+          return;
+        }
+      };
     }
 
     syncAutoScrollPreference();
     scrollLogToBottom(true);
-    setInterval(pollStatus, 1500);
-    pollStatus();
+    connectWebSocket();
 
     if (activeTab === 'register') {
       const sectionSelect = document.getElementById('configSectionSelect');
