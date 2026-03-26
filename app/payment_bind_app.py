@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import random
 import re
@@ -264,6 +265,34 @@ class PaymentBinder:
             "Accept": "application/json, text/plain, */*",
         })
 
+    def _fresh_recovery_session(self):
+        recovery = curl_requests.Session(impersonate="chrome136")
+        if self.proxy:
+            recovery.proxies = {"http": self.proxy, "https": self.proxy}
+        carry_cookie_names = {
+            "cf_clearance", "__cf_bm", "_cf_uvid", "_cfuvid", "__cflb",
+            "oai-did", "__Secure-next-auth.session-token", "__Host-next-auth.csrf-token",
+            "_account", "oai-hlib",
+        }
+        try:
+            for cookie in self.session.cookies.jar:
+                name = str(getattr(cookie, "name", "") or "")
+                value = str(getattr(cookie, "value", "") or "")
+                domain = str(getattr(cookie, "domain", "") or "")
+                if not name or not value or name not in carry_cookie_names:
+                    continue
+                if "chatgpt.com" in domain:
+                    recovery.cookies.set(name, value, domain=domain or ".chatgpt.com")
+                elif name in {"cf_clearance", "__cf_bm", "_cf_uvid", "_cfuvid", "__cflb", "oai-did"}:
+                    recovery.cookies.set(name, value, domain=domain or ".chatgpt.com")
+        except Exception:
+            pass
+        recovery.cookies.set("oai-did", self.device_id, domain="chatgpt.com")
+        recovery.cookies.set("oai-did", self.device_id, domain=".chatgpt.com")
+        recovery.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
+        recovery.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
+        return recovery
+
     def _cookie(self, name: str) -> str:
         try:
             for cookie in self.session.cookies.jar:
@@ -387,7 +416,11 @@ class PaymentBinder:
             raise RuntimeError("Pay 阶段独立补 session 需要账号 email/password")
 
         self.log("检测到缺少 session_token，开始在 Pay 阶段独立补 next-auth 会话")
-        csrf_resp = self.session.get(
+        recovery_session = self._fresh_recovery_session()
+        old_session = self.session
+        self.session = recovery_session
+        try:
+            csrf_resp = self.session.get(
             f"{CHATGPT_BASE}/api/auth/csrf",
             headers={
                 "Accept": "application/json",
@@ -397,204 +430,211 @@ class PaymentBinder:
             timeout=20,
             impersonate="chrome136",
         )
-        if csrf_resp.status_code != 200:
-            raise RuntimeError(f"Pay 阶段获取 csrf 失败: {csrf_resp.status_code} {csrf_resp.text[:180]}")
-        csrf_data = csrf_resp.json() if csrf_resp.content else {}
-        csrf_token = str(csrf_data.get("csrfToken") or "")
-        if not csrf_token:
-            raise RuntimeError("Pay 阶段 csrf 响应缺少 csrfToken")
+            if csrf_resp.status_code != 200:
+                raise RuntimeError(f"Pay 阶段获取 csrf 失败: {csrf_resp.status_code} {csrf_resp.text[:180]}")
+            csrf_data = csrf_resp.json() if csrf_resp.content else {}
+            csrf_token = str(csrf_data.get("csrfToken") or "")
+            if not csrf_token:
+                raise RuntimeError("Pay 阶段 csrf 响应缺少 csrfToken")
 
-        signin_resp = self.session.post(
-            f"{CHATGPT_BASE}/api/auth/signin/openai",
-            data={
-                "csrfToken": csrf_token,
-                "callbackUrl": f"{CHATGPT_BASE}/",
-                "json": "true",
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": CHATGPT_BASE,
-                "Referer": f"{CHATGPT_BASE}/auth/login",
-                "User-Agent": self.ua,
-            },
-            timeout=20,
-            impersonate="chrome136",
-        )
-        if signin_resp.status_code != 200:
-            raise RuntimeError(f"Pay 阶段 signin/openai 失败: {signin_resp.status_code} {signin_resp.text[:180]}")
-        signin_data = signin_resp.json() if signin_resp.content else {}
-        auth_url = str(signin_data.get("url") or "").strip()
-        if not auth_url:
-            raise RuntimeError("Pay 阶段 signin/openai 未返回授权链接")
-
-        auth_resp = self.session.get(
-            auth_url,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": f"{CHATGPT_BASE}/auth/login",
-                "Upgrade-Insecure-Requests": "1",
-                "User-Agent": self.ua,
-            },
-            allow_redirects=True,
-            timeout=30,
-            impersonate="chrome136",
-        )
-        self.log(f"Pay 阶段 auth_url GET: status={auth_resp.status_code} final_url={auth_resp.url}")
-
-        authorize_headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/log-in",
-            "User-Agent": self.ua,
-            "oai-device-id": self.device_id,
-            "openai-sentinel-token": self._sentinel_token(),
-        }
-        authorize_headers.update(self._trace_headers())
-        authorize_resp = self.session.post(
-            "https://auth.openai.com/api/accounts/authorize/continue",
-            json={"username": {"kind": "email", "value": email}},
-            headers=authorize_headers,
-            timeout=30,
-            impersonate="chrome136",
-        )
-        if authorize_resp.status_code != 200:
-            raise RuntimeError(f"Pay 阶段 authorize/continue 失败: {authorize_resp.status_code} {authorize_resp.text[:200]}")
-
-        password_headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Origin": "https://auth.openai.com",
-            "Referer": "https://auth.openai.com/log-in/password",
-            "User-Agent": self.ua,
-            "oai-device-id": self.device_id,
-            "openai-sentinel-token": self._sentinel_token(),
-        }
-        password_headers.update(self._trace_headers())
-        password_resp = self.session.post(
-            "https://auth.openai.com/api/accounts/password/verify",
-            json={"password": password},
-            headers=password_headers,
-            timeout=30,
-            impersonate="chrome136",
-        )
-        if password_resp.status_code != 200:
-            raise RuntimeError(f"Pay 阶段 password/verify 失败: {password_resp.status_code} {password_resp.text[:200]}")
-
-        password_data = password_resp.json() if password_resp.content else {}
-        page_type = str((password_data.get("page") or {}).get("type") or "")
-        continue_url = str(password_data.get("continue_url") or "").strip()
-        if page_type == "email_otp_verification" or "email-verification" in continue_url:
-            raise RuntimeError("Pay 阶段补 session 命中邮箱 OTP，当前独立绑卡流程暂不支持")
-        if continue_url.startswith("/"):
-            continue_url = f"https://auth.openai.com{continue_url}"
-        if not continue_url:
-            raise RuntimeError("Pay 阶段补 session 未获取到 continue_url")
-
-        code = self._follow_redirect_for_code(continue_url, referer="https://auth.openai.com/log-in/password")
-        if not code:
-            session_data = self._decode_auth_session() or {}
-            workspaces = session_data.get("workspaces") or []
-            workspace_id = str((workspaces[0] or {}).get("id") or "") if workspaces else ""
-            if workspace_id:
-                workspace_headers = {
+            signin_resp = self.session.post(
+                f"{CHATGPT_BASE}/api/auth/signin/openai",
+                data={
+                    "csrfToken": csrf_token,
+                    "callbackUrl": f"{CHATGPT_BASE}/",
+                    "json": "true",
+                },
+                headers={
                     "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Origin": "https://auth.openai.com",
-                    "Referer": continue_url,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": CHATGPT_BASE,
+                    "Referer": f"{CHATGPT_BASE}/auth/login",
                     "User-Agent": self.ua,
-                    "oai-device-id": self.device_id,
-                }
-                workspace_headers.update(self._trace_headers())
-                ws_resp = self.session.post(
-                    "https://auth.openai.com/api/accounts/workspace/select",
-                    json={"workspace_id": workspace_id},
-                    headers=workspace_headers,
-                    timeout=30,
-                    allow_redirects=False,
-                    impersonate="chrome136",
-                )
-                if ws_resp.status_code in (301, 302, 303, 307, 308):
-                    code = self._extract_code(str(ws_resp.headers.get("Location") or "")) or self._follow_redirect_for_code(str(ws_resp.headers.get("Location") or ""), referer=continue_url)
-                elif ws_resp.status_code == 200:
-                    ws_data = ws_resp.json() if ws_resp.content else {}
-                    orgs = ((ws_data.get("data") or {}).get("orgs") or [])
-                    ws_next = str(ws_data.get("continue_url") or "").strip()
-                    org_id = str((orgs[0] or {}).get("id") or "") if orgs else ""
-                    project_id = ""
-                    if orgs:
-                        projects = (orgs[0] or {}).get("projects") or []
-                        project_id = str((projects[0] or {}).get("id") or "") if projects else ""
-                    if org_id:
-                        org_headers = {
-                            "Accept": "application/json",
-                            "Content-Type": "application/json",
-                            "Origin": "https://auth.openai.com",
-                            "Referer": ws_next if ws_next.startswith("http") else f"https://auth.openai.com{ws_next or ''}",
-                            "User-Agent": self.ua,
-                            "oai-device-id": self.device_id,
-                        }
-                        org_headers.update(self._trace_headers())
-                        body = {"org_id": org_id}
-                        if project_id:
-                            body["project_id"] = project_id
-                        org_resp = self.session.post(
-                            "https://auth.openai.com/api/accounts/organization/select",
-                            json=body,
-                            headers=org_headers,
-                            timeout=30,
-                            allow_redirects=False,
-                            impersonate="chrome136",
-                        )
-                        location = str(org_resp.headers.get("Location") or "")
-                        if org_resp.status_code in (301, 302, 303, 307, 308):
-                            code = self._extract_code(location) or self._follow_redirect_for_code(location, referer=org_headers["Referer"])
-                        elif org_resp.status_code == 200:
-                            org_data = org_resp.json() if org_resp.content else {}
-                            org_next = str(org_data.get("continue_url") or "").strip()
-                            if org_next.startswith("/"):
-                                org_next = f"https://auth.openai.com{org_next}"
-                            code = self._follow_redirect_for_code(org_next, referer=org_headers["Referer"])
-                    elif ws_next:
-                        if ws_next.startswith("/"):
-                            ws_next = f"https://auth.openai.com{ws_next}"
-                        code = self._follow_redirect_for_code(ws_next, referer=continue_url)
+                },
+                timeout=20,
+                impersonate="chrome136",
+            )
+            if signin_resp.status_code != 200:
+                raise RuntimeError(f"Pay 阶段 signin/openai 失败: {signin_resp.status_code} {signin_resp.text[:180]}")
+            signin_data = signin_resp.json() if signin_resp.content else {}
+            auth_url = str(signin_data.get("url") or "").strip()
+            if not auth_url:
+                raise RuntimeError("Pay 阶段 signin/openai 未返回授权链接")
 
-        if not code:
-            raise RuntimeError(f"Pay 阶段未能提取 callback code: continue_url={continue_url}")
+            auth_resp = self.session.get(
+                auth_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": f"{CHATGPT_BASE}/auth/login",
+                    "Upgrade-Insecure-Requests": "1",
+                    "User-Agent": self.ua,
+                },
+                allow_redirects=True,
+                timeout=30,
+                impersonate="chrome136",
+            )
+            final_auth_url = str(auth_resp.url or "")
+            self.log(f"Pay 阶段 auth_url GET: status={auth_resp.status_code} final_url={final_auth_url}")
 
-        state = ""
-        try:
-            from urllib.parse import parse_qs, urlparse
-            state = str(parse_qs(urlparse(auth_url).query).get("state", [""])[0] or "")
-        except Exception:
-            state = ""
-        if not state:
-            raise RuntimeError("Pay 阶段 signin/openai 返回的 auth_url 缺少 state")
-
-        callback_url = f"{CHATGPT_BASE}/api/auth/callback/openai?code={code}&state={state}"
-        callback_resp = self.session.get(
-            callback_url,
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://auth.openai.com/",
-                "Upgrade-Insecure-Requests": "1",
+            authorize_headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://auth.openai.com",
+                "Referer": final_auth_url if final_auth_url.startswith("https://auth.openai.com") else "https://auth.openai.com/log-in",
                 "User-Agent": self.ua,
-            },
-            allow_redirects=True,
-            timeout=30,
-            impersonate="chrome136",
-        )
-        final_url = str(callback_resp.url or "")
-        session_token = self._cookie("__Secure-next-auth.session-token")
-        csrf_cookie = self._cookie("__Host-next-auth.csrf-token") or csrf_token
-        self.log(f"Pay 阶段会话补链完成: callback_final_url={final_url}, session_token={'yes' if session_token else 'no'}")
-        if not session_token:
-            raise RuntimeError(f"Pay 阶段未能建立 session_token: final_url={final_url}")
-        self.account["session_token"] = session_token
-        self.account["csrf_token"] = csrf_cookie
-        return session_token, csrf_cookie
+                "oai-device-id": self.device_id,
+                "openai-sentinel-token": self._sentinel_token(),
+            }
+            authorize_headers.update(self._trace_headers())
+            authorize_resp = self.session.post(
+                "https://auth.openai.com/api/accounts/authorize/continue",
+                json={"username": {"kind": "email", "value": email}},
+                headers=authorize_headers,
+                timeout=30,
+                impersonate="chrome136",
+            )
+            if authorize_resp.status_code != 200:
+                raise RuntimeError(f"Pay 阶段 authorize/continue 失败: {authorize_resp.status_code} {authorize_resp.text[:200]}")
+
+            password_headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Origin": "https://auth.openai.com",
+                "Referer": "https://auth.openai.com/log-in/password",
+                "User-Agent": self.ua,
+                "oai-device-id": self.device_id,
+                "openai-sentinel-token": self._sentinel_token(),
+            }
+            password_headers.update(self._trace_headers())
+            password_resp = self.session.post(
+                "https://auth.openai.com/api/accounts/password/verify",
+                json={"password": password},
+                headers=password_headers,
+                timeout=30,
+                impersonate="chrome136",
+            )
+            if password_resp.status_code != 200:
+                raise RuntimeError(f"Pay 阶段 password/verify 失败: {password_resp.status_code} {password_resp.text[:200]}")
+
+            password_data = password_resp.json() if password_resp.content else {}
+            page_type = str((password_data.get("page") or {}).get("type") or "")
+            continue_url = str(password_data.get("continue_url") or "").strip()
+            if page_type == "email_otp_verification" or "email-verification" in continue_url:
+                raise RuntimeError("Pay 阶段补 session 命中邮箱 OTP，当前独立绑卡流程暂不支持")
+            if continue_url.startswith("/"):
+                continue_url = f"https://auth.openai.com{continue_url}"
+            if not continue_url:
+                raise RuntimeError("Pay 阶段补 session 未获取到 continue_url")
+
+            code = self._follow_redirect_for_code(continue_url, referer="https://auth.openai.com/log-in/password")
+            if not code:
+                session_data = self._decode_auth_session() or {}
+                workspaces = session_data.get("workspaces") or []
+                workspace_id = str((workspaces[0] or {}).get("id") or "") if workspaces else ""
+                if workspace_id:
+                    workspace_headers = {
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Origin": "https://auth.openai.com",
+                        "Referer": continue_url,
+                        "User-Agent": self.ua,
+                        "oai-device-id": self.device_id,
+                    }
+                    workspace_headers.update(self._trace_headers())
+                    ws_resp = self.session.post(
+                        "https://auth.openai.com/api/accounts/workspace/select",
+                        json={"workspace_id": workspace_id},
+                        headers=workspace_headers,
+                        timeout=30,
+                        allow_redirects=False,
+                        impersonate="chrome136",
+                    )
+                    if ws_resp.status_code in (301, 302, 303, 307, 308):
+                        code = self._extract_code(str(ws_resp.headers.get("Location") or "")) or self._follow_redirect_for_code(str(ws_resp.headers.get("Location") or ""), referer=continue_url)
+                    elif ws_resp.status_code == 200:
+                        ws_data = ws_resp.json() if ws_resp.content else {}
+                        orgs = ((ws_data.get("data") or {}).get("orgs") or [])
+                        ws_next = str(ws_data.get("continue_url") or "").strip()
+                        org_id = str((orgs[0] or {}).get("id") or "") if orgs else ""
+                        project_id = ""
+                        if orgs:
+                            projects = (orgs[0] or {}).get("projects") or []
+                            project_id = str((projects[0] or {}).get("id") or "") if projects else ""
+                        if org_id:
+                            org_headers = {
+                                "Accept": "application/json",
+                                "Content-Type": "application/json",
+                                "Origin": "https://auth.openai.com",
+                                "Referer": ws_next if ws_next.startswith("http") else f"https://auth.openai.com{ws_next or ''}",
+                                "User-Agent": self.ua,
+                                "oai-device-id": self.device_id,
+                            }
+                            org_headers.update(self._trace_headers())
+                            body = {"org_id": org_id}
+                            if project_id:
+                                body["project_id"] = project_id
+                            org_resp = self.session.post(
+                                "https://auth.openai.com/api/accounts/organization/select",
+                                json=body,
+                                headers=org_headers,
+                                timeout=30,
+                                allow_redirects=False,
+                                impersonate="chrome136",
+                            )
+                            location = str(org_resp.headers.get("Location") or "")
+                            if org_resp.status_code in (301, 302, 303, 307, 308):
+                                code = self._extract_code(location) or self._follow_redirect_for_code(location, referer=org_headers["Referer"])
+                            elif org_resp.status_code == 200:
+                                org_data = org_resp.json() if org_resp.content else {}
+                                org_next = str(org_data.get("continue_url") or "").strip()
+                                if org_next.startswith("/"):
+                                    org_next = f"https://auth.openai.com{org_next}"
+                                code = self._follow_redirect_for_code(org_next, referer=org_headers["Referer"])
+                        elif ws_next:
+                            if ws_next.startswith("/"):
+                                ws_next = f"https://auth.openai.com{ws_next}"
+                            code = self._follow_redirect_for_code(ws_next, referer=continue_url)
+
+            if not code:
+                raise RuntimeError(f"Pay 阶段未能提取 callback code: continue_url={continue_url}")
+
+            state = ""
+            try:
+                from urllib.parse import parse_qs, urlparse
+                state = str(parse_qs(urlparse(auth_url).query).get("state", [""])[0] or "")
+            except Exception:
+                state = ""
+            if not state:
+                raise RuntimeError("Pay 阶段 signin/openai 返回的 auth_url 缺少 state")
+
+            callback_url = f"{CHATGPT_BASE}/api/auth/callback/openai?code={code}&state={state}"
+            callback_resp = self.session.get(
+                callback_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://auth.openai.com/",
+                    "Upgrade-Insecure-Requests": "1",
+                    "User-Agent": self.ua,
+                },
+                allow_redirects=True,
+                timeout=30,
+                impersonate="chrome136",
+            )
+            final_url = str(callback_resp.url or "")
+            session_token = self._cookie("__Secure-next-auth.session-token")
+            csrf_cookie = self._cookie("__Host-next-auth.csrf-token") or csrf_token
+            self.log(f"Pay 阶段会话补链完成: callback_final_url={final_url}, session_token={'yes' if session_token else 'no'}")
+            if not session_token:
+                raise RuntimeError(f"Pay 阶段未能建立 session_token: final_url={final_url}")
+            self.account["session_token"] = session_token
+            self.account["csrf_token"] = csrf_cookie
+            self.account["cookies"] = {str(getattr(c, 'name', '') or ''): str(getattr(c, 'value', '') or '') for c in self.session.cookies.jar if str(getattr(c, 'name', '') or '')}
+            return session_token, csrf_cookie
+        finally:
+            if self._cookie("__Secure-next-auth.session-token"):
+                old_session = self.session
+            else:
+                self.session = old_session
 
     def _payment_context(self) -> dict[str, str]:
         access_token = str(self.account.get("access_token") or "").strip()
