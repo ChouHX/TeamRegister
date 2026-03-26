@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>注册管理面板</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
   <script src="https://js.stripe.com/v3/"></script>
 </head>
@@ -185,47 +185,47 @@
         </form>
 
         {% elif active_tab == 'pay' %}
-        <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)] items-start">
-          <div class="rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 shadow-sm overflow-hidden min-w-0">
-            <div class="border-b border-slate-200/80 bg-slate-50/70 px-5 py-4">
+        <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(380px,0.92fr)_minmax(520px,1.28fr)] xl:grid-cols-[minmax(340px,0.95fr)_minmax(440px,1.25fr)] items-start">
+          <section class="min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white/95 shadow-sm ring-1 ring-slate-100">
+            <div class="border-b border-slate-200 bg-slate-50/80 px-5 py-4">
               <div class="flex items-start justify-between gap-4">
                 <div>
                   <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-key mr-2 text-emerald-500"></i>Token 设置</h2>
-                  <p class="mt-1 text-[11px] text-slate-500">左侧专注输入 access token 与连接配置，保持高频操作区域简洁紧凑。</p>
+                  <p class="mt-1 text-[11px] leading-5 text-slate-500">左侧仅保留 access token 与连接配置，适配 TailwindCSS v4 的稳定双列布局。</p>
                 </div>
-                <span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">TOKEN</span>
+                <span class="inline-flex shrink-0 items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">TOKEN</span>
               </div>
             </div>
 
-            <div class="p-5">
+            <div class="space-y-4 p-5">
               <form id="payForm" method="post" action="/pay/start" class="space-y-4">
                 <div class="space-y-2">
                   <div class="flex items-center justify-between gap-3">
-                    <label class="text-xs font-semibold uppercase tracking-wide text-slate-500">Access Token</label>
+                    <label class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Access Token</label>
                     <span class="text-[11px] text-slate-400">支持直接粘贴完整 token</span>
                   </div>
-                  <textarea id="payAccessTokenInput" name="payment_access_token" rows="16" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="w-full rounded-2xl border border-slate-300 bg-white px-3 py-3 text-xs font-mono leading-5 text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100">{{ state.last_pay_form.payment_access_token }}</textarea>
+                  <textarea id="payAccessTokenInput" name="payment_access_token" rows="16" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="block min-h-[360px] w-full resize-y rounded-2xl border border-slate-300 bg-white px-3 py-3 text-xs leading-5 font-mono text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100">{{ state.last_pay_form.payment_access_token }}</textarea>
                 </div>
 
-                <div class="rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
-                  <label class="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">连接设置</label>
-                  <input name="proxy" value="{{ state.last_pay_form.proxy }}" placeholder="代理，可留空" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
+                <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <label class="mb-2 block text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">连接设置</label>
+                  <input name="proxy" value="{{ state.last_pay_form.proxy }}" placeholder="代理，可留空" class="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
                 </div>
 
                 <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <button type="button" data-submit-action="/pay/start" class="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60" {% if state.running and state.current_task == 'pay' %}disabled{% endif %}>
+                  <button type="button" data-submit-action="/pay/start" class="inline-flex min-h-11 items-center justify-center rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60" {% if state.running and state.current_task == 'pay' %}disabled{% endif %}>
                     <i class="fa fa-link mr-2"></i>{% if state.running and state.current_task == 'pay' %}生成中{% else %}生成支付地址{% endif %}
                   </button>
-                  <button type="button" data-submit-action="/pay/save" class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
+                  <button type="button" data-submit-action="/pay/save" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                     <i class="fa fa-save mr-2"></i>保存设置
                   </button>
-                  <button type="button" id="continueVerificationBtn" class="inline-flex items-center justify-center rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50" {% if not state.pay_verification.required or state.pay_verification.status == 'manual_verification_acknowledged' %}disabled{% endif %}>
+                  <button type="button" id="continueVerificationBtn" class="inline-flex min-h-11 items-center justify-center rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50" {% if not state.pay_verification.required or state.pay_verification.status == 'manual_verification_acknowledged' %}disabled{% endif %}>
                     <i class="fa fa-check mr-2"></i>标记已验证
                   </button>
                 </div>
               </form>
             </div>
-          </div>
+          </section>
         {% else %}
         <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3 mb-4">
           <div>
@@ -319,94 +319,89 @@
         </div>
       </div>
       {% elif not accounts_fullscreen and active_tab == 'pay' %}
-      <div class="space-y-4">
-        <div class="rounded-3xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 shadow-sm min-w-0">
+      <div class="space-y-4 min-w-0">
+        <section class="min-w-0 rounded-[28px] border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 shadow-sm ring-1 ring-emerald-100/70">
           <div class="flex items-start justify-between gap-3">
-            <div>
+            <div class="min-w-0">
               <div class="flex items-center gap-3 min-w-0">
-                <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-signal mr-2 text-slate-600"></i>支付地址与状态</h2>
-                <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap" data-status-badge>
+                <h2 class="truncate text-base font-semibold text-slate-900"><i class="fa fa-signal mr-2 text-slate-600"></i>支付地址与状态</h2>
+                <span class="inline-flex shrink-0 items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium whitespace-nowrap text-slate-600" data-status-badge>
                   <i class="fa fa-pause mr-2"></i>空闲
                 </span>
               </div>
-              <p class="mt-1 text-[11px] text-slate-500">右侧集中展示 checkout 地址、stripe hosted page 地址以及当前验证状态。</p>
+              <p class="mt-1 text-[11px] leading-5 text-slate-500">右侧集中展示 checkout 地址、stripe hosted page 地址以及当前验证状态。</p>
             </div>
-            <span class="inline-flex items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">STATUS</span>
+            <span class="inline-flex shrink-0 items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">STATUS</span>
           </div>
 
           <div id="payVerificationPanel" class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-slate-800 {% if not state.pay_verification.required %}opacity-70{% endif %}">
             <div class="flex items-start justify-between gap-3">
-              <div>
+              <div class="min-w-0 flex-1">
                 <h3 class="text-sm font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>人工验证提醒</h3>
-                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">尚未进入人工验证流程，生成支付地址后会在这里显示验证提示。</p>
-                <div class="mt-2 text-[11px] text-amber-800 space-y-1">
-                  <div>状态：<span id="payVerificationStatus" class="font-semibold">{{ state.pay_verification.status or '待生成' }}</span></div>
-                  <div>原因：<span id="payVerificationReason" class="font-semibold">{{ state.pay_verification.reason or '暂无' }}</span></div>
-                  <div>渲染模式：<span id="payVerificationRenderMode" class="font-semibold">{{ state.pay_verification.render_mode or 'external_link' }}</span></div>
-                  <div>链接：<span id="payVerificationSitekey" class="font-semibold break-all">{{ state.pay_verification.verification_url or '尚未生成' }}</span></div>
+                <p class="mt-1 text-xs leading-5 text-amber-700" id="payVerificationMessage">尚未进入人工验证流程，生成支付地址后会在这里显示验证提示。</p>
+                <div class="mt-3 grid grid-cols-1 gap-2 text-[11px] text-amber-800 sm:grid-cols-2">
+                  <div class="rounded-xl bg-white/60 px-3 py-2">状态：<span id="payVerificationStatus" class="font-semibold">{{ state.pay_verification.status or '待生成' }}</span></div>
+                  <div class="rounded-xl bg-white/60 px-3 py-2">原因：<span id="payVerificationReason" class="font-semibold">{{ state.pay_verification.reason or '暂无' }}</span></div>
+                  <div class="rounded-xl bg-white/60 px-3 py-2">渲染模式：<span id="payVerificationRenderMode" class="font-semibold">{{ state.pay_verification.render_mode or 'external_link' }}</span></div>
+                  <div class="rounded-xl bg-white/60 px-3 py-2 break-all">链接：<span id="payVerificationSitekey" class="font-semibold">{{ state.pay_verification.verification_url or '尚未生成' }}</span></div>
                 </div>
               </div>
-              <span class="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">PAY</span>
+              <span class="inline-flex shrink-0 items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">PAY</span>
             </div>
           </div>
 
-          <div id="payHostedPagePanel" class="mt-4 rounded-3xl border border-emerald-200 bg-white/80 p-5">
+          <div id="payHostedPagePanel" class="mt-4 rounded-[24px] border border-emerald-200 bg-white/85 p-5 shadow-sm backdrop-blur-sm">
             <div class="flex items-start justify-between gap-3">
-              <div>
+              <div class="min-w-0">
                 <h3 class="text-sm font-semibold text-emerald-900"><i class="fa fa-external-link mr-2"></i>支付地址</h3>
-                <p class="mt-1 text-xs text-emerald-700" id="payHostedPageMessage">右侧面板始终显示占位组件，便于在生成前后保持稳定布局。</p>
+                <p class="mt-1 text-xs leading-5 text-emerald-700" id="payHostedPageMessage">右侧面板始终显示占位组件，便于在生成前后保持稳定布局。</p>
               </div>
-              <span class="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">READY</span>
+              <span class="inline-flex shrink-0 items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">READY</span>
             </div>
 
-            <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <div class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div class="text-[11px] uppercase tracking-wide text-slate-400">Checkout Session</div>
-                <div id="payHostedPageSession" class="mt-1 break-all font-mono text-xs text-slate-700">{{ state.pay_hosted_page.checkout_session_id or '-' }}</div>
+            <div class="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div class="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">Checkout Session</div>
+                <div id="payHostedPageSession" class="mt-1 break-all font-mono text-xs leading-5 text-slate-700">{{ state.pay_hosted_page.checkout_session_id or '-' }}</div>
               </div>
-              <div class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div class="text-[11px] uppercase tracking-wide text-slate-400">预期金额</div>
+              <div class="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">预期金额</div>
                 <div id="payHostedPageAmount" class="mt-1 text-sm font-semibold text-slate-800">{{ state.pay_hosted_page.expected_amount if state.pay_hosted_page.expected_amount is not none else '-' }}</div>
               </div>
-              <div class="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div class="text-[11px] uppercase tracking-wide text-slate-400">当前主链接</div>
-                <div id="payHostedPageUrlText" class="mt-1 break-all text-xs text-slate-700">{{ state.pay_hosted_page.url or '尚未生成链接' }}</div>
+              <div class="min-w-0 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">当前主链接</div>
+                <div id="payHostedPageUrlText" class="mt-1 break-all text-xs leading-5 text-slate-700">{{ state.pay_hosted_page.url or '尚未生成链接' }}</div>
               </div>
             </div>
 
-            <div class="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div class="mt-4 grid grid-cols-1 gap-3 2xl:grid-cols-2">
+              <div class="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-sm font-semibold text-slate-900">Checkout 地址</div>
-                  <a id="payCheckoutLink" href="{{ state.pay_hosted_page.checkout_url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 {% if not state.pay_hosted_page.checkout_url %}pointer-events-none opacity-50{% endif %}">
+                  <a id="payCheckoutLink" href="{{ state.pay_hosted_page.checkout_url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 {% if not state.pay_hosted_page.checkout_url %}pointer-events-none opacity-50{% endif %}">
                     <i class="fa fa-external-link mr-2"></i>打开
                   </a>
                 </div>
-                <div id="payCheckoutUrlText" class="mt-3 break-all rounded-xl bg-slate-50 px-3 py-3 font-mono text-[11px] text-slate-600">{{ state.pay_hosted_page.checkout_url or '尚未生成 checkout 地址' }}</div>
+                <div id="payCheckoutUrlText" class="mt-3 break-all rounded-xl bg-slate-50 px-3 py-3 font-mono text-[11px] leading-5 text-slate-600">{{ state.pay_hosted_page.checkout_url or '尚未生成 checkout 地址' }}</div>
               </div>
-              <div class="rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm">
+              <div class="min-w-0 rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm">
                 <div class="flex items-center justify-between gap-3">
                   <div class="text-sm font-semibold text-slate-900">Stripe Hosted Page</div>
-                  <a id="payHostedPageLink" href="{{ state.pay_hosted_page.stripe_hosted_url or state.pay_hosted_page.url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-700 {% if not state.pay_hosted_page.stripe_hosted_url and not state.pay_hosted_page.url %}pointer-events-none opacity-50{% endif %}">
+                  <a id="payHostedPageLink" href="{{ state.pay_hosted_page.stripe_hosted_url or state.pay_hosted_page.url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-700 {% if not state.pay_hosted_page.stripe_hosted_url and not state.pay_hosted_page.url %}pointer-events-none opacity-50{% endif %}">
                     <i class="fa fa-external-link mr-2"></i>打开
                   </a>
                 </div>
-                <div id="payHostedStripeUrlText" class="mt-3 break-all rounded-xl bg-emerald-50 px-3 py-3 font-mono text-[11px] text-emerald-800">{{ state.pay_hosted_page.stripe_hosted_url or '尚未生成 stripe hosted page 地址' }}</div>
+                <div id="payHostedStripeUrlText" class="mt-3 break-all rounded-xl bg-emerald-50 px-3 py-3 font-mono text-[11px] leading-5 text-emerald-800">{{ state.pay_hosted_page.stripe_hosted_url or '尚未生成 stripe hosted page 地址' }}</div>
               </div>
             </div>
 
             <div class="mt-4 flex flex-wrap gap-2">
               <button type="button" id="copyHostedPageBtn" class="inline-flex items-center justify-center rounded-xl border border-emerald-300 bg-white px-4 py-2 text-sm font-medium text-emerald-800 transition hover:bg-emerald-100">
-                 <i class="fa fa-copy mr-2"></i>复制主链接
-               </button>
-             </div>
-           </div>
-         </div>
                 <i class="fa fa-copy mr-2"></i>复制主链接
               </button>
             </div>
           </div>
-        </div>
+        </section>
       {% endif %}
     </div>
   </div>
