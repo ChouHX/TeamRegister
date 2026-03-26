@@ -300,6 +300,7 @@ def _account_summary(row: dict[str, Any]) -> dict[str, Any]:
         "expired": str(row.get("expired") or ""),
         "last_refresh": str(row.get("last_refresh") or ""),
         "type": str(row.get("type") or "codex"),
+        "access_token": str(row.get("access_token") or ""),
         "has_access_token": bool(str(row.get("access_token") or "").strip()),
         "has_refresh_token": bool(str(row.get("refresh_token") or "").strip()),
         "has_session_token": bool(str(row.get("session_token") or "").strip()),
