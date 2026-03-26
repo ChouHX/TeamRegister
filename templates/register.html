@@ -33,8 +33,9 @@
       </a>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)] gap-4 items-start">
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+    {% set accounts_fullscreen = active_tab == 'accounts' %}
+    <div class="grid grid-cols-1 {% if not accounts_fullscreen %}md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)]{% endif %} gap-4 items-start">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 {% if accounts_fullscreen %}min-h-[75vh]{% endif %}">
         {% if active_tab == 'register' %}
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-sliders mr-2 text-indigo-500"></i>注册参数</h2>
@@ -333,6 +334,7 @@
         {% endif %}
       </div>
 
+      {% if not accounts_fullscreen %}
       <div class="space-y-4">
         <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
           <div class="flex items-center justify-between mb-3 gap-4">
@@ -352,6 +354,7 @@
           </div>
         </div>
       </div>
+      {% endif %}
     </div>
   </div>
 
@@ -363,6 +366,7 @@
     const autoScrollToggle = document.getElementById('autoScrollToggle');
     const autoScrollStorageKey = 'registerPanelAutoScroll';
     let lastErrorText = '';
+    const dismissedErrorStorageKey = 'registerPanelDismissedError';
 
     function isAutoScrollEnabled() {
       return !!autoScrollToggle?.checked;
@@ -417,6 +421,9 @@
       const dialog = ensureErrorDialog();
       const content = document.getElementById('errorDialogContent');
       if (content) content.textContent = message || '';
+      if (message) {
+        window.sessionStorage.setItem(dismissedErrorStorageKey, message);
+      }
       if (!dialog.open) dialog.showModal();
     }
 
@@ -432,12 +439,16 @@
             scrollLogToBottom();
           }
         }
+        const dismissedError = window.sessionStorage.getItem(dismissedErrorStorageKey) || '';
         if (data.last_error && data.last_error !== lastErrorText) {
           lastErrorText = data.last_error;
-          showErrorDialog(data.last_error);
+          if (data.last_error !== dismissedError) {
+            showErrorDialog(data.last_error);
+          }
         }
         if (!data.last_error) {
           lastErrorText = '';
+          window.sessionStorage.removeItem(dismissedErrorStorageKey);
         }
         if (statusBadge) {
           if (data.running) {
