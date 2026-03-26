@@ -35,8 +35,9 @@
     </div>
 
     {% set accounts_fullscreen = active_tab == 'accounts' %}
-    <div class="grid grid-cols-1 {% if not accounts_fullscreen %}md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)]{% endif %} gap-4 items-start">
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 {% if accounts_fullscreen %}min-h-[75vh]{% endif %}">
+    {% set pay_fullscreen = active_tab == 'pay' %}
+    <div class="grid grid-cols-1 {% if not accounts_fullscreen and not pay_fullscreen %}md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)]{% endif %} gap-4 items-start">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 {% if accounts_fullscreen or pay_fullscreen %}min-h-[75vh]{% endif %}">
         {% if active_tab == 'register' %}
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-sliders mr-2 text-indigo-500"></i>注册参数</h2>
