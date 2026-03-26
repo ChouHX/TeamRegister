@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -41,6 +41,8 @@ class RegisterState:
         self.last_success = False
         self.last_form = self._default_register_form()
         self.last_pay_form = self._default_pay_form()
+        self.last_pay_result: dict[str, Any] = {}
+        self.pay_verification: dict[str, Any] = {}
         self.register_process: Optional[Process] = None
         self.register_log_thread: Optional[threading.Thread] = None
         self.register_queue: Optional[Queue] = None
@@ -147,6 +149,8 @@ def _notify_status_update() -> None:
             "last_error": STATE.last_error,
             "last_success": STATE.last_success,
             "status_version": STATE.status_version,
+            "pay_result": STATE.last_pay_result,
+            "pay_verification": STATE.pay_verification,
         }
     _schedule_ws_broadcast(payload)
 
@@ -439,7 +443,13 @@ def _run_pay_job(*, pay_email: str, pay_form: dict[str, str]) -> None:
             binder = payment_bind_app.PaymentBinder(cfg, account)
             result = binder.run()
             print(json.dumps(result, ensure_ascii=False, indent=2))
-        success = True
+            verification = result.get("verification") if isinstance(result, dict) else {}
+            with STATE.lock:
+                STATE.last_pay_result = result if isinstance(result, dict) else {}
+                STATE.pay_verification = verification if isinstance(verification, dict) else {}
+            if isinstance(verification, dict) and verification.get("required"):
+                _append_output("\n[PAY] 已进入人工验证挂起态，请在前端打开验证链接并手动完成验证。\n")
+            success = not (isinstance(verification, dict) and verification.get("required"))
     except Exception as exc:
         error_text = f"{exc}\n{traceback.format_exc()}"
     finally:
@@ -474,6 +484,8 @@ def get_status():
                 "last_success": STATE.last_success,
                 "log_version": STATE.log_version,
                 "status_version": STATE.status_version,
+                "pay_result": STATE.last_pay_result,
+                "pay_verification": STATE.pay_verification,
             }
         )
 
@@ -493,6 +505,8 @@ async def websocket_status(websocket: WebSocket):
             "last_success": STATE.last_success,
             "log_version": STATE.log_version,
             "status_version": STATE.status_version,
+            "pay_result": STATE.last_pay_result,
+            "pay_verification": STATE.pay_verification,
         }
     await websocket.send_text(json.dumps(init_payload, ensure_ascii=False))
     try:
@@ -519,10 +533,30 @@ def export_account(email: str = Form("")):
         with STATE.lock:
             STATE.last_error = ""
         _append_output(f"\n[ACCOUNTS] 已导出账号文件: {path.name}\n")
+        return FileResponse(path=str(path), filename=path.name, media_type="application/json")
     except Exception as exc:
         with STATE.lock:
             STATE.last_error = f"导出失败: {exc}"
-    return RedirectResponse(url="/?tab=accounts", status_code=303)
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
+
+
+@app.post("/accounts/export-batch")
+def export_accounts_batch(emails: list[str] = Form(default=[])):
+    targets = [str(email or "").strip() for email in emails if str(email or "").strip()]
+    if not targets:
+        with STATE.lock:
+            STATE.last_error = "批量导出失败：没有选中任何账号"
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
+    try:
+        zip_path = ACCOUNT_STORE.export_accounts_zip(targets)
+        with STATE.lock:
+            STATE.last_error = ""
+        _append_output(f"\n[ACCOUNTS] 已批量导出账号压缩包: {zip_path.name} ({len(targets)} 个)\n")
+        return FileResponse(path=str(zip_path), filename=zip_path.name, media_type="application/zip")
+    except Exception as exc:
+        with STATE.lock:
+            STATE.last_error = f"批量导出失败: {exc}"
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
 
 
 @app.post("/accounts/delete")
@@ -796,6 +830,8 @@ def start_pay(
         STATE.last_output = ""
         STATE.last_error = ""
         STATE.last_success = False
+        STATE.last_pay_result = {}
+        STATE.pay_verification = {}
         STATE.log_version += 1
         STATE.last_pay_form.update(pay_form)
     _notify_status_update()
@@ -803,6 +839,25 @@ def start_pay(
     thread = threading.Thread(target=_run_pay_job, kwargs={"pay_email": pay_email, "pay_form": dict(STATE.last_pay_form)}, daemon=True)
     thread.start()
     return RedirectResponse(url="/?tab=pay", status_code=303)
+
+
+@app.post("/pay/verification/continue")
+def continue_pay_verification():
+    with STATE.lock:
+        verification = dict(STATE.pay_verification or {})
+        result = dict(STATE.last_pay_result or {})
+        if not verification.get("required"):
+            return JSONResponse({"ok": False, "message": "当前没有待处理的人工验证任务"}, status_code=400)
+        verification["status"] = "manual_verification_acknowledged"
+        verification["message"] = "已确认人工验证已处理，请结合当前页面和最终支付状态继续观察结果。"
+        result["verification"] = verification
+        STATE.pay_verification = verification
+        STATE.last_pay_result = result
+        STATE.last_success = False
+        STATE.last_error = ""
+    _append_output("\n[PAY] 已收到前端人工验证完成确认，请结合支付页结果继续观察是否成功。\n")
+    _notify_status_update()
+    return JSONResponse({"ok": True, "verification": verification, "pay_result": result})
 
 
 @app.get("/pay/fill-address")

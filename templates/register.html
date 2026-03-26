@@ -361,6 +361,31 @@
               <span>自动滚动日志</span>
             </label>
           </div>
+          <div id="payVerificationPanel" class="hidden mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-slate-800">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <h3 class="text-sm font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>检测到人工验证</h3>
+                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">请在新窗口完成验证码/挑战后，再点击继续处理。</p>
+                <div class="mt-2 text-[11px] text-amber-800 space-y-1">
+                  <div>状态：<span id="payVerificationStatus" class="font-semibold">-</span></div>
+                  <div>原因：<span id="payVerificationReason" class="font-semibold">-</span></div>
+                </div>
+              </div>
+              <span class="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">PAY</span>
+            </div>
+            <div class="mt-3 rounded-xl border border-amber-200 bg-white p-3">
+              <div class="text-[11px] text-slate-500 mb-1">验证链接</div>
+              <div id="payVerificationUrl" class="break-all text-xs text-slate-700"></div>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button type="button" id="openVerificationBtn" class="inline-flex items-center justify-center rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-medium text-sm px-4 py-2 transition">
+                <i class="fa fa-external-link mr-2"></i>打开验证页
+              </button>
+              <button type="button" id="continueVerificationBtn" class="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-800 font-medium text-sm px-4 py-2 transition">
+                <i class="fa fa-check mr-2"></i>我已完成验证
+              </button>
+            </div>
+          </div>
           <div class="rounded-xl bg-slate-950 text-slate-100 p-4 min-h-[620px] max-h-[75vh] overflow-auto" id="logViewport">
             <pre class="whitespace-pre-wrap text-xs leading-5" data-log-container>{{ state.last_output if state.last_output else '暂无日志输出，启动任务后会在这里显示。' }}</pre>
           </div>
@@ -384,6 +409,7 @@
     let statusPollTimer = null;
     let latestLogVersion = 0;
     let latestStatusVersion = 0;
+    let latestPayVerification = null;
 
     function isAutoScrollEnabled() {
       return !!autoScrollToggle?.checked;
@@ -446,7 +472,10 @@
 
     function updateStatusBadge(data) {
       if (!statusBadge) return;
-      if (data.running) {
+      if (data.pay_verification?.required && data.pay_verification?.status === 'awaiting_human_verification') {
+        statusBadge.className = 'inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
+        statusBadge.innerHTML = '<i class="fa fa-shield mr-2"></i>等待人工验证';
+      } else if (data.running) {
         statusBadge.className = 'inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-3 py-1 text-xs font-medium whitespace-nowrap';
         statusBadge.innerHTML = '<i class="fa fa-spinner fa-spin mr-2"></i>执行中';
       } else if (data.last_success) {
@@ -459,6 +488,27 @@
         statusBadge.className = 'inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap';
         statusBadge.innerHTML = '<i class="fa fa-pause mr-2"></i>空闲';
       }
+    }
+
+    function updatePayVerificationPanel(verification) {
+      const panel = document.getElementById('payVerificationPanel');
+      const messageEl = document.getElementById('payVerificationMessage');
+      const statusEl = document.getElementById('payVerificationStatus');
+      const reasonEl = document.getElementById('payVerificationReason');
+      const urlEl = document.getElementById('payVerificationUrl');
+      const openBtn = document.getElementById('openVerificationBtn');
+      const continueBtn = document.getElementById('continueVerificationBtn');
+      latestPayVerification = verification && typeof verification === 'object' ? verification : null;
+      if (!panel) return;
+      const required = !!latestPayVerification?.required;
+      panel.classList.toggle('hidden', !required);
+      if (!required) return;
+      if (messageEl) messageEl.textContent = latestPayVerification.message || '请在新窗口完成验证码/挑战后，再点击继续处理。';
+      if (statusEl) statusEl.textContent = latestPayVerification.status || '-';
+      if (reasonEl) reasonEl.textContent = latestPayVerification.reason || '-';
+      if (urlEl) urlEl.textContent = latestPayVerification.verification_url || '-';
+      if (openBtn) openBtn.disabled = !(latestPayVerification.verification_url || '').trim();
+      if (continueBtn) continueBtn.disabled = latestPayVerification.status === 'manual_verification_acknowledged';
     }
 
     function handleStatusMessage(data) {
@@ -474,6 +524,7 @@
         window.sessionStorage.removeItem(dismissedErrorStorageKey);
       }
       updateStatusBadge(data);
+      updatePayVerificationPanel(data.pay_verification || null);
     }
 
     function appendLogChunk(chunk, version = null) {
@@ -662,19 +713,19 @@
       batchExportBtn?.addEventListener('click', () => {
         const selected = selectedEmails();
         if (!selected.length) return;
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = '/accounts/export-batch';
         selected.forEach((email) => {
-          const form = document.createElement('form');
-          form.method = 'post';
-          form.action = '/accounts/export';
           const input = document.createElement('input');
           input.type = 'hidden';
-          input.name = 'email';
+          input.name = 'emails';
           input.value = email;
           form.appendChild(input);
-          document.body.appendChild(form);
-          form.submit();
-          form.remove();
         });
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
       });
       filterRows();
     }
@@ -694,6 +745,8 @@
     if (activeTab === 'pay') {
       const fillBtn = document.getElementById('fillAddressBtn');
       const payForm = document.getElementById('payForm');
+      const openVerificationBtn = document.getElementById('openVerificationBtn');
+      const continueVerificationBtn = document.getElementById('continueVerificationBtn');
       fillBtn?.addEventListener('click', async () => {
         try {
           const paymentCountry = (payForm.querySelector('[name="payment_country"]')?.value || 'US').trim() || 'US';
@@ -718,6 +771,31 @@
           payForm.querySelector('[name="payment_billing_postal_code"]').value = address.postal_code || '';
         } catch (e) {
           showErrorDialog(`自动地址填充失败: ${e?.message || e}`);
+        }
+      });
+      openVerificationBtn?.addEventListener('click', () => {
+        const verificationUrl = (latestPayVerification?.verification_url || '').trim();
+        if (!verificationUrl) {
+          showErrorDialog('当前没有可打开的验证链接');
+          return;
+        }
+        window.open(verificationUrl, '_blank', 'noopener,noreferrer');
+      });
+      continueVerificationBtn?.addEventListener('click', async () => {
+        try {
+          const res = await fetch('/pay/verification/continue', {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+            },
+          });
+          const data = await res.json();
+          if (!res.ok || !data?.ok) {
+            throw new Error(data?.message || `HTTP ${res.status}`);
+          }
+          updatePayVerificationPanel(data.verification || null);
+        } catch (e) {
+          showErrorDialog(`人工验证确认失败: ${e?.message || e}`);
         }
       });
     }
