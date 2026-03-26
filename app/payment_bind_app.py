@@ -124,7 +124,7 @@ def _has_checkout_context(account: dict[str, Any]) -> bool:
 def _merge_account_sources(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     merged = dict(fallback)
     merged.update(primary)
-    for key in ("session_token", "csrf_token", "device_id", "user_agent", "sec_ch_ua", "access_token", "refresh_token", "id_token", "account_id", "expired", "last_refresh"):
+    for key in ("session_token", "csrf_token", "device_id", "user_agent", "sec_ch_ua", "access_token", "refresh_token", "id_token", "account_id", "expired", "last_refresh", "password"):
         if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
             merged[key] = fallback.get(key)
     fallback_cookies = fallback.get("cookies") if isinstance(fallback.get("cookies"), dict) else {}
