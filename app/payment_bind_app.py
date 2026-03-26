@@ -24,7 +24,6 @@ from app.account_store import AccountStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = BASE_DIR / "config.json"
-ACCOUNTS_DIR = BASE_DIR / "codex_tokens"
 CHATGPT_BASE = "https://chatgpt.com"
 STRIPE_API = "https://api.stripe.com"
 STRIPE_METRICS_URL = "https://m.stripe.com/6"
@@ -81,36 +80,100 @@ def flatten_form_data(data: Any, prefix: str = "") -> list[tuple[str, str]]:
     return pairs
 
 
+def _account_dirs() -> list[Path]:
+    cfg = load_config()
+    raw_dir = str(cfg.get("token_json_dir") or "").strip()
+    candidates: list[Path] = []
+    if raw_dir:
+        path = Path(raw_dir)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        candidates.append(path)
+    candidates.append(BASE_DIR / "data" / "codex_tokens")
+    candidates.append(BASE_DIR / "codex_tokens")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = str(item.resolve()) if item.exists() else str(item)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+
+def _load_account_file(email: str) -> dict[str, Any]:
+    for directory in _account_dirs():
+        path = directory / f"{email}.json"
+        if not path.exists():
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    raise FileNotFoundError(f"账号不存在: {email}")
+
+
+
+def _has_checkout_context(account: dict[str, Any]) -> bool:
+    cookies = account.get("cookies") if isinstance(account.get("cookies"), dict) else {}
+    return bool(str(account.get("session_token") or "").strip()) and bool(cookies)
+
+
+
+def _merge_account_sources(primary: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(fallback)
+    merged.update(primary)
+    for key in ("session_token", "csrf_token", "device_id", "user_agent", "sec_ch_ua", "access_token", "refresh_token", "id_token", "account_id", "expired", "last_refresh"):
+        if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
+            merged[key] = fallback.get(key)
+    fallback_cookies = fallback.get("cookies") if isinstance(fallback.get("cookies"), dict) else {}
+    primary_cookies = primary.get("cookies") if isinstance(primary.get("cookies"), dict) else {}
+    merged["cookies"] = primary_cookies or fallback_cookies
+    return merged
+
+
+
 def list_accounts() -> list[dict[str, Any]]:
     rows = ACCOUNT_STORE.list_accounts()
     if rows:
         return rows
-    if not ACCOUNTS_DIR.exists():
-        return []
     results: list[dict[str, Any]] = []
-    for path in sorted([p for p in ACCOUNTS_DIR.glob("*.json") if p.is_file()], key=lambda x: x.name.lower()):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                results.append(data)
-        except Exception:
+    for directory in _account_dirs():
+        if not directory.exists():
             continue
+        for path in sorted([p for p in directory.glob("*.json") if p.is_file()], key=lambda x: x.name.lower()):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    results.append(data)
+            except Exception:
+                continue
+        if results:
+            break
     return results
 
 
+
 def load_account(email: str) -> dict[str, Any]:
-    account = ACCOUNT_STORE.get_account(email)
-    if account:
-        return account
-    path = ACCOUNTS_DIR / f"{email}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"账号不存在: {email}")
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("账号文件格式错误")
-    return data
+    sqlite_account = ACCOUNT_STORE.get_account(email)
+    file_account: dict[str, Any] | None = None
+    try:
+        file_account = _load_account_file(email)
+    except Exception:
+        file_account = None
+
+    if sqlite_account and file_account:
+        merged = _merge_account_sources(sqlite_account, file_account)
+        if _has_checkout_context(merged):
+            return merged
+        return merged
+    if sqlite_account:
+        return sqlite_account
+    if file_account:
+        return file_account
+    raise FileNotFoundError(f"账号不存在: {email}")
 
 
 def choose_account_email() -> str:
@@ -122,7 +185,8 @@ def choose_account_email() -> str:
         email = str(account.get("email") or "")
         expired = str(account.get("expired") or "")
         account_id = str(account.get("account_id") or "")
-        print(f"[{idx}] {email} | account_id={account_id[:8]}... | expired={expired}")
+        status = "bind-ready" if _has_checkout_context(account) else "missing-session"
+        print(f"[{idx}] {email} | account_id={account_id[:8]}... | expired={expired} | {status}")
     while True:
         raw = input("\n请选择账号编号: ").strip()
         if raw.isdigit():

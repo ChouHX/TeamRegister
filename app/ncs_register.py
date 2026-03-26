@@ -2440,10 +2440,13 @@ class ChatGPTRegister:
         self.session = web_session
         try:
             self.visit_homepage()
+            _random_delay(1.6, 3.2)
             csrf = self.get_csrf()
+            _random_delay(1.8, 3.6)
             auth_url = self.signin(email, csrf)
             parsed = urlparse(auth_url)
             chatgpt_state = parse_qs(parsed.query).get("state", [""])[0]
+            _random_delay(2.0, 4.2)
             final_url = self.authorize(auth_url)
             continue_referer = final_url if final_url.startswith(OAUTH_ISSUER) else f"{OAUTH_ISSUER}/log-in"
 
@@ -2458,6 +2461,7 @@ class ChatGPTRegister:
             if not sentinel_authorize:
                 raise RuntimeError("ChatGPT 登录链 sentinel authorize token 生成失败")
 
+            _random_delay(2.5, 5.0)
             resp_continue = self.session.post(
                 f"{OAUTH_ISSUER}/api/accounts/authorize/continue",
                 json={
@@ -2486,6 +2490,7 @@ class ChatGPTRegister:
                 continue_url = f"{OAUTH_ISSUER}{continue_url}"
             if continue_url:
                 try:
+                    _random_delay(1.8, 3.6)
                     self.session.get(
                         continue_url,
                         headers={
@@ -2512,6 +2517,7 @@ class ChatGPTRegister:
             if not sentinel_pwd:
                 raise RuntimeError("ChatGPT 登录链 sentinel password token 生成失败")
 
+            _random_delay(2.2, 4.5)
             resp_verify = self.session.post(
                 f"{OAUTH_ISSUER}/api/accounts/password/verify",
                 json={"password": password},
@@ -2656,7 +2662,9 @@ class ChatGPTRegister:
             if not callback_code:
                 raise RuntimeError("ChatGPT 登录链未获取到 callback code")
 
+            _random_delay(1.8, 3.6)
             _, payload = self.complete_chatgpt_callback(callback_code, chatgpt_state)
+            _random_delay(1.4, 2.8)
             session_info = self.ensure_chatgpt_session()
             if not session_info.get("session_token"):
                 raise RuntimeError(
