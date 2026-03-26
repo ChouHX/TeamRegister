@@ -365,7 +365,7 @@
             <div class="flex items-start justify-between gap-3">
               <div>
                 <h3 class="text-sm font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>检测到人工验证</h3>
-                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">请在当前页面弹窗中完成 hCaptcha 验证。</p>
+                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">系统会直接在当前页面弹窗内嵌显示 hCaptcha 验证组件。</p>
                 <div class="mt-2 text-[11px] text-amber-800 space-y-1">
                   <div>状态：<span id="payVerificationStatus" class="font-semibold">-</span></div>
                   <div>原因：<span id="payVerificationReason" class="font-semibold">-</span></div>
@@ -375,38 +375,34 @@
               </div>
               <span class="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">PAY</span>
             </div>
-            <div class="mt-3 rounded-xl border border-amber-200 bg-white p-3 hidden" id="payVerificationUrlWrapper">
-              <div class="text-[11px] text-slate-500 mb-1">验证链接</div>
-              <div id="payVerificationUrl" class="break-all text-xs text-slate-700"></div>
-            </div>
             <div class="mt-3 flex flex-wrap gap-2">
               <button type="button" id="openVerificationBtn" class="inline-flex items-center justify-center rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-medium text-sm px-4 py-2 transition">
-                <i class="fa fa-window-maximize mr-2"></i>打开验证码弹窗
+                <i class="fa fa-window-maximize mr-2"></i>重新打开验证码弹窗
               </button>
               <button type="button" id="continueVerificationBtn" class="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-800 font-medium text-sm px-4 py-2 transition">
                 <i class="fa fa-check mr-2"></i>我已完成验证
               </button>
             </div>
           </div>
-+
-+          <dialog id="hcaptchaDialog" class="rounded-2xl border border-amber-200 shadow-xl w-[min(760px,94vw)] p-0 backdrop:bg-slate-900/50">
-+            <div class="bg-white rounded-2xl p-4">
-+              <div class="flex items-center justify-between mb-3">
-+                <div>
-+                  <h3 class="text-base font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>hCaptcha 验证</h3>
-+                  <p class="mt-1 text-xs text-slate-500">当前会尝试直接在弹窗中渲染提取到的 hCaptcha 组件参数。</p>
-+                </div>
-+                <button type="button" id="closeHcaptchaDialogBtn" class="text-slate-400 hover:text-slate-600"><i class="fa fa-times"></i></button>
-+              </div>
-+              <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 min-h-[220px]">
-+                <div id="hcaptchaInlineContainer" class="min-h-[120px] flex items-center justify-center text-sm text-slate-500">等待加载 hCaptcha 组件…</div>
-+                <div id="hcaptchaInlineMeta" class="mt-3 text-[11px] text-slate-500 break-all"></div>
-+              </div>
-+              <div class="mt-4 flex justify-end gap-2">
-+                <button type="button" id="closeHcaptchaDialogFooterBtn" class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm px-4 py-2">关闭</button>
-+              </div>
-+            </div>
-+          </dialog>
+
+          <dialog id="hcaptchaDialog" class="rounded-2xl border border-amber-200 shadow-xl w-[min(760px,94vw)] p-0 backdrop:bg-slate-900/50">
+            <div class="bg-white rounded-2xl p-4">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <h3 class="text-base font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>hCaptcha 验证</h3>
+                  <p class="mt-1 text-xs text-slate-500">当前会尝试直接在弹窗中渲染提取到的 hCaptcha 组件参数。</p>
+                </div>
+                <button type="button" id="closeHcaptchaDialogBtn" class="text-slate-400 hover:text-slate-600"><i class="fa fa-times"></i></button>
+              </div>
+              <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 min-h-[220px]">
+                <div id="hcaptchaInlineContainer" class="min-h-[120px] flex items-center justify-center text-sm text-slate-500">等待加载 hCaptcha 组件…</div>
+                <div id="hcaptchaInlineMeta" class="mt-3 text-[11px] text-slate-500 break-all"></div>
+              </div>
+              <div class="mt-4 flex justify-end gap-2">
+                <button type="button" id="closeHcaptchaDialogFooterBtn" class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm px-4 py-2">关闭</button>
+              </div>
+            </div>
+          </dialog>
           <div class="rounded-xl bg-slate-950 text-slate-100 p-4 min-h-[620px] max-h-[75vh] overflow-auto" id="logViewport">
             <pre class="whitespace-pre-wrap text-xs leading-5" data-log-container>{{ state.last_output if state.last_output else '暂无日志输出，启动任务后会在这里显示。' }}</pre>
           </div>
@@ -431,6 +427,7 @@
     let latestLogVersion = 0;
     let latestStatusVersion = 0;
     let latestPayVerification = null;
+    let autoOpenedVerificationKey = '';
 
     function isAutoScrollEnabled() {
       return !!autoScrollToggle?.checked;
@@ -573,8 +570,6 @@
       const reasonEl = document.getElementById('payVerificationReason');
       const renderModeEl = document.getElementById('payVerificationRenderMode');
       const sitekeyEl = document.getElementById('payVerificationSitekey');
-      const urlEl = document.getElementById('payVerificationUrl');
-      const urlWrapper = document.getElementById('payVerificationUrlWrapper');
       const openBtn = document.getElementById('openVerificationBtn');
       const continueBtn = document.getElementById('continueVerificationBtn');
       latestPayVerification = verification && typeof verification === 'object' ? verification : null;
@@ -584,15 +579,22 @@
       if (!required) return;
       const hcaptcha = latestPayVerification?.hcaptcha || {};
       const renderMode = latestPayVerification?.render_mode || 'external_link';
-      if (messageEl) messageEl.textContent = latestPayVerification.message || '请在当前页面弹窗中完成 hCaptcha 验证。';
+      if (messageEl) {
+        messageEl.textContent = renderMode === 'inline_dialog'
+          ? (latestPayVerification.message || '系统会直接在当前页面弹窗内嵌显示 hCaptcha 验证组件。')
+          : '当前未提取到可内嵌的 hCaptcha 参数，不能打开其他页面，因为外部页面没有认证数据。';
+      }
       if (statusEl) statusEl.textContent = latestPayVerification.status || '-';
       if (reasonEl) reasonEl.textContent = latestPayVerification.reason || '-';
       if (renderModeEl) renderModeEl.textContent = renderMode;
       if (sitekeyEl) sitekeyEl.textContent = hcaptcha.sitekey || '-';
-      if (urlEl) urlEl.textContent = latestPayVerification.verification_url || '-';
-      if (urlWrapper) urlWrapper.classList.toggle('hidden', !latestPayVerification.verification_url);
-      if (openBtn) openBtn.disabled = !(renderMode === 'inline_dialog' || (latestPayVerification.verification_url || '').trim());
+      if (openBtn) openBtn.disabled = renderMode !== 'inline_dialog';
       if (continueBtn) continueBtn.disabled = latestPayVerification.status === 'manual_verification_acknowledged';
+      const verificationKey = `${latestPayVerification.status || ''}|${hcaptcha.sitekey || ''}|${latestPayVerification.reason || ''}`;
+      if (renderMode === 'inline_dialog' && latestPayVerification.status === 'awaiting_human_verification' && verificationKey && verificationKey !== autoOpenedVerificationKey) {
+        autoOpenedVerificationKey = verificationKey;
+        requestAnimationFrame(() => openHcaptchaDialog(latestPayVerification));
+      }
     }
 
     function handleStatusMessage(data) {
@@ -866,16 +868,11 @@
           return;
         }
         const renderMode = latestPayVerification.render_mode || 'external_link';
-        if (renderMode === 'inline_dialog') {
-          openHcaptchaDialog(latestPayVerification);
+        if (renderMode !== 'inline_dialog') {
+          showErrorDialog('当前未提取到可内嵌的 hCaptcha 组件参数，不能再打开其他页面，因为外部页面没有认证数据。');
           return;
         }
-        const verificationUrl = (latestPayVerification?.verification_url || '').trim();
-        if (!verificationUrl) {
-          showErrorDialog('当前没有可打开的验证链接');
-          return;
-        }
-        window.open(verificationUrl, '_blank', 'noopener,noreferrer');
+        openHcaptchaDialog(latestPayVerification);
       });
       closeHcaptchaDialogBtn?.addEventListener('click', () => hcaptchaDialog?.close());
       closeHcaptchaDialogFooterBtn?.addEventListener('click', () => hcaptchaDialog?.close());
