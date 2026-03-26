@@ -21,12 +21,15 @@
       </div>
     </div>
 
-    <div class="mb-4 flex gap-2">
+    <div class="mb-4 flex gap-2 flex-wrap">
       <a href="/?tab=register" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'register' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
         <i class="fa fa-user-plus mr-2"></i>注册
       </a>
       <a href="/?tab=pay" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'pay' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
         <i class="fa fa-credit-card mr-2"></i>Pay
+      </a>
+      <a href="/?tab=accounts" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'accounts' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+        <i class="fa fa-database mr-2"></i>账户管理
       </a>
     </div>
 
@@ -178,7 +181,7 @@
           </div>
         </form>
 
-        {% else %}
+        {% elif active_tab == 'pay' %}
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-credit-card mr-2 text-emerald-500"></i>Pay 参数</h2>
           <span class="text-[11px] text-slate-400">SQLite 账号 + 精简支付字段</span>
@@ -229,8 +232,6 @@
             </div>
           </div>
 
-
-
           <div class="space-y-3" id="manualAddressSection">
             <div>
               <label class="block text-xs font-medium text-slate-700 mb-1">账单姓名</label>
@@ -277,6 +278,58 @@
             </button>
           </div>
         </form>
+        {% else %}
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-database mr-2 text-violet-500"></i>账户管理</h2>
+          <span class="text-[11px] text-slate-400">基于 SQLite 账号库管理导出 / 删除 / 绑卡可用性</span>
+        </div>
+
+        <div class="space-y-3 max-h-[75vh] overflow-auto pr-1">
+          {% if account_rows %}
+            {% for account in account_rows %}
+            <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold text-slate-900 break-all">{{ account.email }}</div>
+                  <div class="mt-1 text-[11px] text-slate-500 break-all">account_id={{ account.account_id or '-' }}</div>
+                  <div class="mt-1 text-[11px] text-slate-500">expired={{ account.expired or '-' }}</div>
+                  <div class="mt-1 text-[11px] text-slate-500">last_refresh={{ account.last_refresh or '-' }}</div>
+                </div>
+                <span class="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_checkout_context else 'bg-amber-100 text-amber-700' }}">
+                  {% if account.has_checkout_context %}可绑卡{% else %}缺少绑卡上下文{% endif %}
+                </span>
+              </div>
+
+              <div class="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                <div class="rounded-lg bg-white border border-slate-200 px-2.5 py-2">access_token：{{ '有' if account.has_access_token else '无' }}</div>
+                <div class="rounded-lg bg-white border border-slate-200 px-2.5 py-2">refresh_token：{{ '有' if account.has_refresh_token else '无' }}</div>
+                <div class="rounded-lg bg-white border border-slate-200 px-2.5 py-2">session_token：{{ '有' if account.has_session_token else '无' }}</div>
+                <div class="rounded-lg bg-white border border-slate-200 px-2.5 py-2">csrf_token：{{ '有' if account.has_csrf_token else '无' }}</div>
+                <div class="rounded-lg bg-white border border-slate-200 px-2.5 py-2 col-span-2">cookies：{{ account.cookies_count }}</div>
+              </div>
+
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <form method="post" action="/accounts/export">
+                  <input type="hidden" name="email" value="{{ account.email }}" />
+                  <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium text-sm px-4 py-2 transition">
+                    <i class="fa fa-download mr-2"></i>导出 JSON
+                  </button>
+                </form>
+                <form method="post" action="/accounts/delete" onsubmit="return confirm('确认删除该账号？');">
+                  <input type="hidden" name="email" value="{{ account.email }}" />
+                  <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2 transition">
+                    <i class="fa fa-trash mr-2"></i>删除账号
+                  </button>
+                </form>
+              </div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+              当前 SQLite 中暂无账号记录。
+            </div>
+          {% endif %}
+        </div>
         {% endif %}
       </div>
 

@@ -236,6 +236,24 @@ def _list_account_options() -> list[dict[str, str]]:
     ]
 
 
+
+def _account_summary(row: dict[str, Any]) -> dict[str, Any]:
+    cookies = row.get("cookies") if isinstance(row.get("cookies"), dict) else {}
+    return {
+        "email": str(row.get("email") or ""),
+        "account_id": str(row.get("account_id") or ""),
+        "expired": str(row.get("expired") or ""),
+        "last_refresh": str(row.get("last_refresh") or ""),
+        "type": str(row.get("type") or "codex"),
+        "has_access_token": bool(str(row.get("access_token") or "").strip()),
+        "has_refresh_token": bool(str(row.get("refresh_token") or "").strip()),
+        "has_session_token": bool(str(row.get("session_token") or "").strip()),
+        "has_csrf_token": bool(str(row.get("csrf_token") or "").strip()),
+        "cookies_count": len(cookies),
+        "has_checkout_context": bool(str(row.get("session_token") or "").strip()) and bool(cookies),
+    }
+
+
 def _fetch_random_address(country_code: str) -> dict[str, Any]:
     code = str(country_code or "US").strip().upper() or "US"
     try:
@@ -264,6 +282,7 @@ def _render_index(request: Request, *, active_tab: str = "register") -> HTMLResp
     _reload_runtime_config()
     _sync_forms_from_config_if_idle()
     cfg = _load_current_config()
+    accounts = ACCOUNT_STORE.list_accounts()
     return templates.TemplateResponse(
         request,
         "register.html",
@@ -275,6 +294,7 @@ def _render_index(request: Request, *, active_tab: str = "register") -> HTMLResp
             "state": STATE,
             "active_tab": active_tab,
             "account_options": _list_account_options(),
+            "account_rows": [_account_summary(row) for row in accounts],
         },
     )
 
@@ -394,6 +414,43 @@ def get_status():
                 "last_success": STATE.last_success,
             }
         )
+
+
+@app.post("/accounts/export")
+def export_account(email: str = Form("")):
+    target = str(email or "").strip()
+    if not target:
+        with STATE.lock:
+            STATE.last_error = "导出失败：缺少账号邮箱"
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
+    try:
+        path = ACCOUNT_STORE.export_account_json(target)
+        with STATE.lock:
+            STATE.last_error = ""
+            STATE.last_output += f"\n[ACCOUNTS] 已导出账号文件: {path.name}\n"
+    except Exception as exc:
+        with STATE.lock:
+            STATE.last_error = f"导出失败: {exc}"
+    return RedirectResponse(url="/?tab=accounts", status_code=303)
+
+
+@app.post("/accounts/delete")
+def delete_account(email: str = Form("")):
+    target = str(email or "").strip()
+    if not target:
+        with STATE.lock:
+            STATE.last_error = "删除失败：缺少账号邮箱"
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
+    deleted = ACCOUNT_STORE.delete_account(target)
+    with STATE.lock:
+        if deleted:
+            if STATE.last_pay_form.get("pay_email") == target:
+                STATE.last_pay_form["pay_email"] = ""
+            STATE.last_error = ""
+            STATE.last_output += f"\n[ACCOUNTS] 已删除账号: {target}\n"
+        else:
+            STATE.last_error = f"删除失败：账号不存在 {target}"
+    return RedirectResponse(url="/?tab=accounts", status_code=303)
 
 
 @app.post("/register/save", response_class=HTMLResponse)

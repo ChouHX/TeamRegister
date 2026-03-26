@@ -2298,9 +2298,91 @@ class ChatGPTRegister:
         r = self.session.get(url, headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Upgrade-Insecure-Requests": "1",
+            "User-Agent": self.ua,
         }, allow_redirects=True)
         self._log("8. Callback", "GET", url, r.status_code, {"final_url": str(r.url)})
         return r.status_code, {"final_url": str(r.url)}
+
+    def ensure_chatgpt_session(self) -> dict[str, Any]:
+        """补齐 chatgpt 登录态，尽量拿到 session-token / csrf / accessToken。"""
+        info: dict[str, Any] = {
+            "session_token": "",
+            "csrf_token": "",
+            "access_token": "",
+            "final_url": "",
+        }
+
+        try:
+            homepage = self.session.get(
+                f"{self.BASE}/",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Upgrade-Insecure-Requests": "1",
+                    "User-Agent": self.ua,
+                },
+                allow_redirects=True,
+                timeout=30,
+                impersonate=self.impersonate,
+            )
+            info["final_url"] = str(homepage.url)
+            self._log("9. ChatGPT homepage bootstrap", "GET", f"{self.BASE}/", homepage.status_code, {"final_url": info["final_url"]})
+        except Exception as exc:
+            self._print(f"[Session] ChatGPT 首页预热异常: {exc}")
+
+        session_token = _cookie_value(self.session, "__Secure-next-auth.session-token")
+        csrf_token = _cookie_value(self.session, "__Host-next-auth.csrf-token")
+
+        if not csrf_token:
+            try:
+                csrf_resp = self.session.get(
+                    f"{self.BASE}/api/auth/csrf",
+                    headers={
+                        "Accept": "application/json",
+                        "Referer": f"{self.BASE}/",
+                        "User-Agent": self.ua,
+                    },
+                    timeout=30,
+                    impersonate=self.impersonate,
+                )
+                csrf_data = csrf_resp.json() if csrf_resp.content else {}
+                self._log("10. ChatGPT csrf", "GET", f"{self.BASE}/api/auth/csrf", csrf_resp.status_code, csrf_data)
+                csrf_token = _cookie_value(self.session, "__Host-next-auth.csrf-token")
+                if not csrf_token and isinstance(csrf_data, dict):
+                    csrf_token = str(csrf_data.get("csrfToken") or "")
+            except Exception as exc:
+                self._print(f"[Session] 获取 csrf 失败: {exc}")
+
+        access_token = ""
+        try:
+            session_resp = self.session.get(
+                f"{self.BASE}/api/auth/session",
+                headers={
+                    "Accept": "application/json",
+                    "Referer": f"{self.BASE}/",
+                    "User-Agent": self.ua,
+                },
+                timeout=30,
+                impersonate=self.impersonate,
+            )
+            session_data = session_resp.json() if session_resp.content else {}
+            self._log("11. ChatGPT auth session", "GET", f"{self.BASE}/api/auth/session", session_resp.status_code, session_data)
+            if isinstance(session_data, dict):
+                access_token = str(session_data.get("accessToken") or session_data.get("access_token") or "")
+        except Exception as exc:
+            self._print(f"[Session] 获取 /api/auth/session 失败: {exc}")
+
+        info.update(
+            {
+                "session_token": _cookie_value(self.session, "__Secure-next-auth.session-token") or session_token,
+                "csrf_token": _cookie_value(self.session, "__Host-next-auth.csrf-token") or csrf_token,
+                "access_token": access_token,
+            }
+        )
+        self._print(
+            f"[Session] 补齐结果: session_token={'yes' if info['session_token'] else 'no'}, "
+            f"csrf_token={'yes' if info['csrf_token'] else 'no'}, access_token={'yes' if info['access_token'] else 'no'}"
+        )
+        return info
 
     # ==================== 自动注册主流程 ====================
 
@@ -2355,6 +2437,7 @@ class ChatGPTRegister:
 
         _random_delay(0.2, 0.5)
         self.callback()
+        self.ensure_chatgpt_session()
         return True
 
     def _decode_oauth_session_cookie(self):
@@ -2938,6 +3021,13 @@ class ChatGPTRegister:
             return None
 
         self.session = oauth_session
+        session_info = self.ensure_chatgpt_session()
+        if session_info.get("session_token"):
+            data["session_token"] = session_info.get("session_token")
+        if session_info.get("csrf_token"):
+            data["csrf_token"] = session_info.get("csrf_token")
+        if not data.get("access_token") and session_info.get("access_token"):
+            data["access_token"] = session_info.get("access_token")
         self._print("[OAuth] Codex Token 获取成功")
         return data
 

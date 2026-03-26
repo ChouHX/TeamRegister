@@ -133,6 +133,12 @@ class AccountStore:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def delete_account(self, email: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM accounts WHERE email = ?", (email,))
+            conn.commit()
+            return cursor.rowcount > 0
+
     def export_account_json(self, email: str, export_dir: Path = EXPORT_DIR) -> Path:
         account = self.get_account(email)
         if not account:
