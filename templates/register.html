@@ -268,16 +268,25 @@
               <input name="payment_billing_postal_code" value="{{ state.last_pay_form.payment_billing_postal_code }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
             </div>
           </div>
-          <div class="grid grid-cols-3 gap-3">
+          <div class="grid grid-cols-2 gap-3">
             <button type="button" data-submit-action="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-save mr-2"></i>保存配置
             </button>
             <button type="button" id="fillAddressBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-sm px-4 py-2.5 transition">
               <i class="fa fa-random mr-2"></i>自动地址
             </button>
-            <button type="button" data-submit-action="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running %}disabled{% endif %}>
-              <i class="fa fa-credit-card mr-2"></i>{% if state.running %}Pay 任务执行中{% else %}启动 Pay{% endif %}
+            <button type="button" data-submit-action="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running and state.current_task == 'pay' %}disabled{% endif %}>
+              <i class="fa fa-credit-card mr-2"></i>{% if state.running and state.current_task == 'pay' %}Pay 任务执行中{% else %}启动 Pay{% endif %}
             </button>
+            {% if state.running and state.current_task == 'pay' %}
+            <button type="button" data-submit-action="/pay/stop" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-stop mr-2"></i>停止支付
+            </button>
+            {% else %}
+            <button type="button" data-submit-action="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium text-sm px-4 py-2.5 transition">
+              <i class="fa fa-floppy-o mr-2"></i>保存当前表单
+            </button>
+            {% endif %}
           </div>
         </form>
         {% else %}

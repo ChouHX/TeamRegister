@@ -43,6 +43,7 @@ class RegisterState:
         self.last_pay_form = self._default_pay_form()
         self.last_pay_result: dict[str, Any] = {}
         self.pay_verification: dict[str, Any] = {}
+        self.pay_thread: Optional[threading.Thread] = None
         self.register_process: Optional[Process] = None
         self.register_log_thread: Optional[threading.Thread] = None
         self.register_queue: Optional[Queue] = None
@@ -458,6 +459,7 @@ def _run_pay_job(*, pay_email: str, pay_form: dict[str, str]) -> None:
             STATE.current_task = ""
             STATE.last_error = error_text
             STATE.last_success = success
+            STATE.pay_thread = None
         _notify_status_update()
 
 
@@ -837,7 +839,26 @@ def start_pay(
     _notify_status_update()
 
     thread = threading.Thread(target=_run_pay_job, kwargs={"pay_email": pay_email, "pay_form": dict(STATE.last_pay_form)}, daemon=True)
+    with STATE.lock:
+        STATE.pay_thread = thread
     thread.start()
+    return RedirectResponse(url="/?tab=pay", status_code=303)
+
+
+@app.post("/pay/stop")
+def stop_pay_task():
+    with STATE.lock:
+        running_pay = STATE.running and STATE.current_task == "pay"
+        if not running_pay:
+            STATE.last_error = "当前没有正在执行的 Pay 任务"
+            return RedirectResponse(url="/?tab=pay", status_code=303)
+        STATE.running = False
+        STATE.current_task = ""
+        STATE.last_success = False
+        STATE.last_error = "Pay 任务已被人工停止，当前页面表单数据仍已保留"
+        STATE.pay_thread = None
+    _append_output("\n[WEB] 已停止 Pay 任务，表单内容已保留，可直接再次保存或重启。\n")
+    _notify_status_update()
     return RedirectResponse(url="/?tab=pay", status_code=303)
 
 
