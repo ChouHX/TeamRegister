@@ -1137,10 +1137,29 @@ class PaymentBinder:
         customer = payload.get("customer") if isinstance(payload.get("customer"), dict) else {}
         recurring_details = payload.get("recurring_details") if isinstance(payload.get("recurring_details"), dict) else {}
         invoice = payload.get("invoice") if isinstance(payload.get("invoice"), dict) else {}
+        setup_intent_status = str(setup_intent.get("status") or "")
+        next_action = str((setup_intent.get("next_action") or {}).get("type") or "") if isinstance(setup_intent, dict) else ""
+        payment_status = str(payload.get("payment_status") or "")
+        checkout_status = str(payload.get("status") or "")
+        requires_action = setup_intent_status == "requires_action"
+        is_paid = payment_status == "paid"
+        is_success = is_paid or (checkout_status == "complete" and not requires_action)
+        if requires_action:
+            final_state = "requires_action"
+            final_message = "需要前端完成 3DS/银行挑战，当前仅完成协议提交，未最终生效"
+        elif is_success:
+            final_state = "succeeded"
+            final_message = "支付/绑卡已成功完成"
+        elif checkout_status == "open" and payment_status == "unpaid":
+            final_state = "pending"
+            final_message = "会话仍处于打开且未支付状态，需继续观察后续结果"
+        else:
+            final_state = "unknown"
+            final_message = "状态未闭环，请结合 Stripe/ChatGPT 页面进一步确认"
         summary = {
             "session_id": str(payload.get("session_id") or payload.get("id") or ""),
-            "status": str(payload.get("status") or ""),
-            "payment_status": str(payload.get("payment_status") or ""),
+            "status": checkout_status,
+            "payment_status": payment_status,
             "ui_mode": str(payload.get("ui_mode") or ""),
             "currency": str(payload.get("currency") or ""),
             "amount_subtotal": total_summary.get("subtotal"),
@@ -1148,13 +1167,16 @@ class PaymentBinder:
             "amount_due": total_summary.get("due"),
             "customer_email": str(payload.get("customer_email") or customer.get("email") or ""),
             "customer_name": str((customer.get("name") if isinstance(customer, dict) else "") or ""),
-            "setup_intent_status": str(setup_intent.get("status") or ""),
-            "setup_intent_next_action": str((setup_intent.get("next_action") or {}).get("type") or "") if isinstance(setup_intent, dict) else "",
+            "setup_intent_status": setup_intent_status,
+            "setup_intent_next_action": next_action,
             "return_url": str(payload.get("return_url") or ""),
             "stripe_hosted_url": str(payload.get("stripe_hosted_url") or ""),
-            "requires_action": str(setup_intent.get("status") or "") == "requires_action",
+            "requires_action": requires_action,
             "trial_total": invoice.get("total") if isinstance(invoice, dict) else None,
             "renewal_total": recurring_details.get("total") if isinstance(recurring_details, dict) else None,
+            "final_state": final_state,
+            "final_message": final_message,
+            "is_success": is_success,
         }
         return summary
 
@@ -1225,7 +1247,8 @@ class PaymentBinder:
             f"status={summary.get('status') or '-'} "
             f"payment_status={summary.get('payment_status') or '-'} "
             f"setup_intent_status={summary.get('setup_intent_status') or '-'} "
-            f"next_action={summary.get('setup_intent_next_action') or '-'}"
+            f"next_action={summary.get('setup_intent_next_action') or '-'} "
+            f"final_state={summary.get('final_state') or '-'}"
         )
         return {"raw": data, "summary": summary}
 
@@ -1299,6 +1322,9 @@ class PaymentBinder:
                         "setup_intent_next_action": confirm_summary.get("setup_intent_next_action") if isinstance(confirm_summary, dict) else "",
                         "requires_action": confirm_summary.get("requires_action") if isinstance(confirm_summary, dict) else False,
                         "return_url": confirm_summary.get("return_url") if isinstance(confirm_summary, dict) else "",
+                        "final_state": confirm_summary.get("final_state") if isinstance(confirm_summary, dict) else "",
+                        "final_message": confirm_summary.get("final_message") if isinstance(confirm_summary, dict) else "",
+                        "is_success": confirm_summary.get("is_success") if isinstance(confirm_summary, dict) else False,
                     },
                 }
                 self.log(
@@ -1306,7 +1332,8 @@ class PaymentBinder:
                     f"checkout_status={result['confirm_status']['checkout_status'] or '-'} "
                     f"payment_status={result['confirm_status']['payment_status'] or '-'} "
                     f"setup_intent_status={result['confirm_status']['setup_intent_status'] or '-'} "
-                    f"requires_action={result['confirm_status']['requires_action']}"
+                    f"requires_action={result['confirm_status']['requires_action']} "
+                    f"final_state={result['confirm_status']['final_state'] or '-'}"
                 )
                 return result
             except Exception as exc:
