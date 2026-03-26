@@ -749,6 +749,13 @@ class PaymentBinder:
 
     def init_stripe_hosted_page(self, checkout_session_id: str, publishable_key: str) -> dict[str, Any]:
         stripe_version = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
+        billing_email = str(self.config.get("payment_billing_email") or self.account.get("email") or "").strip()
+        billing_name = str(self.config.get("payment_billing_name") or self.account.get("email") or "OpenAI User").strip()
+        billing_country = str(self.config.get("payment_billing_country") or self.config.get("payment_country") or "US").strip().upper()
+        billing_line1 = str(self.config.get("payment_billing_line1") or "").strip()
+        billing_city = str(self.config.get("payment_billing_city") or "").strip()
+        billing_state = str(self.config.get("payment_billing_state") or "").strip()
+        billing_postal_code = str(self.config.get("payment_billing_postal_code") or "").strip()
         data = {
             "browser_locale": "zh-CN",
             "browser_timezone": "Asia/Tokyo",
@@ -759,6 +766,14 @@ class PaymentBinder:
             "elements_session_client[stripe_js_id]": self.stripe_js_id,
             "elements_session_client[locale]": "zh-CN",
             "elements_session_client[is_aggregation_expected]": "false",
+            "customer_email": billing_email,
+            "payment_method_data[billing_details][name]": billing_name,
+            "payment_method_data[billing_details][email]": billing_email,
+            "payment_method_data[billing_details][address][line1]": billing_line1,
+            "payment_method_data[billing_details][address][city]": billing_city,
+            "payment_method_data[billing_details][address][state]": billing_state,
+            "payment_method_data[billing_details][address][postal_code]": billing_postal_code,
+            "payment_method_data[billing_details][address][country]": billing_country,
             "key": publishable_key,
             "_stripe_version": stripe_version,
         }
@@ -774,7 +789,13 @@ class PaymentBinder:
             payload = resp.json() if resp.content else {}
         except Exception:
             payload = {"body_preview": body_preview}
-        self.log(f"payment_pages/init: status={resp.status_code}")
+        self.log(
+            "payment_pages/init: "
+            f"status={resp.status_code} "
+            f"billing_name={'yes' if billing_name else 'no'} "
+            f"billing_email={'yes' if billing_email else 'no'} "
+            f"billing_line1={'yes' if billing_line1 else 'no'}"
+        )
         if resp.status_code == 200 and isinstance(payload, dict):
             hosted_url = str(payload.get("stripe_hosted_url") or "").strip()
             if hosted_url:
@@ -1363,6 +1384,7 @@ class PaymentBinder:
                 "stripe_hosted_url": checkout.get("stripe_hosted_url") or "",
                 "checkout": {
                     "checkout_session_id": checkout.get("checkout_session_id") or "",
+                    "client_secret": checkout.get("client_secret") or "",
                     "publishable_key": checkout.get("publishable_key") or "",
                     "publishable_key_prefix": str(checkout.get("publishable_key") or "")[:18],
                     "expected_amount": checkout.get("expected_amount"),
@@ -1474,6 +1496,7 @@ class PaymentBinder:
                         "stripe_hosted_url": (checkout.get("stripe_hosted_url") if 'checkout' in locals() else "") or "",
                         "checkout": {
                             "checkout_session_id": (checkout.get("checkout_session_id") if 'checkout' in locals() else "") or "",
+                            "client_secret": (checkout.get("client_secret") if 'checkout' in locals() else "") or "",
                             "checkout_url": (checkout.get("checkout_url") if 'checkout' in locals() else "") or "",
                             "stripe_hosted_url": (checkout.get("stripe_hosted_url") if 'checkout' in locals() else "") or "",
                             "status": str(((checkout.get("raw") if 'checkout' in locals() else {}) or {}).get("status") or ""),

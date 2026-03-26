@@ -303,6 +303,7 @@
             <button type="button" id="selectAllAccountsBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs px-3 py-2 transition">全选</button>
             <button type="button" id="clearAccountsSelectionBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs px-3 py-2 transition">清空</button>
             <button type="button" id="batchExportBtn" class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs px-3 py-2 transition disabled:opacity-50" disabled>批量导出</button>
+            <button type="button" id="batchDeleteBtn" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs px-3 py-2 transition disabled:opacity-50" disabled>批量删除</button>
           </div>
         </div>
 
@@ -757,6 +758,7 @@
       const selectAllBtn = document.getElementById('selectAllAccountsBtn');
       const clearBtn = document.getElementById('clearAccountsSelectionBtn');
       const batchExportBtn = document.getElementById('batchExportBtn');
+      const batchDeleteBtn = document.getElementById('batchDeleteBtn');
 
       function visibleRows() {
         return rows.filter((row) => !row.classList.contains('hidden'));
@@ -766,11 +768,31 @@
         return rowCheckboxes.filter((cb) => cb.checked).map((cb) => cb.value);
       }
 
+      function submitBatchForm(action, emails) {
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = action;
+        emails.forEach((email) => {
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'emails';
+          input.value = email;
+          form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
+      }
+
       function updateBatchState() {
         const selected = selectedEmails();
         if (batchExportBtn) {
           batchExportBtn.disabled = selected.length === 0;
           batchExportBtn.textContent = selected.length ? `批量导出 (${selected.length})` : '批量导出';
+        }
+        if (batchDeleteBtn) {
+          batchDeleteBtn.disabled = selected.length === 0;
+          batchDeleteBtn.textContent = selected.length ? `批量删除 (${selected.length})` : '批量删除';
         }
         if (masterCheckbox) {
           const visible = visibleRows().map((row) => row.querySelector('.account-checkbox')).filter(Boolean);
@@ -812,19 +834,16 @@
       batchExportBtn?.addEventListener('click', () => {
         const selected = selectedEmails();
         if (!selected.length) return;
-        const form = document.createElement('form');
-        form.method = 'post';
-        form.action = '/accounts/export-batch';
-        selected.forEach((email) => {
-          const input = document.createElement('input');
-          input.type = 'hidden';
-          input.name = 'emails';
-          input.value = email;
-          form.appendChild(input);
-        });
-        document.body.appendChild(form);
-        form.submit();
-        form.remove();
+        submitBatchForm('/accounts/export-batch', selected);
+      });
+      batchDeleteBtn?.addEventListener('click', () => {
+        const selected = selectedEmails();
+        if (!selected.length) return;
+        const message = selected.length === 1
+          ? `确认删除选中的 1 个账号？此操作不可撤销。`
+          : `确认删除选中的 ${selected.length} 个账号？此操作不可撤销。`;
+        if (!window.confirm(message)) return;
+        submitBatchForm('/accounts/delete-batch', selected);
       });
       filterRows();
     }

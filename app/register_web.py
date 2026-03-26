@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from app import ncs_register, payment_bind_app
 from app.account_store import AccountStore
 from app.address_generator import generate_billing_address
+from app.auth_client import AuthClient
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -581,6 +582,32 @@ def delete_account(email: str = Form("")):
     return RedirectResponse(url="/?tab=accounts", status_code=303)
 
 
+@app.post("/accounts/delete-batch")
+def delete_accounts_batch(emails: list[str] = Form(default=[])):
+    targets = list(dict.fromkeys(str(email or "").strip() for email in emails if str(email or "").strip()))
+    if not targets:
+        with STATE.lock:
+            STATE.last_error = "批量删除失败：没有选中任何账号"
+        return RedirectResponse(url="/?tab=accounts", status_code=303)
+    deleted_count = ACCOUNT_STORE.delete_accounts(targets)
+    with STATE.lock:
+        current_pay_email = str(STATE.last_pay_form.get("pay_email") or "").strip()
+        if current_pay_email and current_pay_email in targets:
+            STATE.last_pay_form["pay_email"] = ""
+        if deleted_count > 0:
+            STATE.last_error = ""
+        else:
+            STATE.last_error = "批量删除失败：选中的账号均不存在"
+    if deleted_count > 0:
+        missing_count = max(0, len(targets) - deleted_count)
+        summary = f"\n[ACCOUNTS] 已批量删除账号: {deleted_count} 个"
+        if missing_count:
+            summary += f"，其中 {missing_count} 个不存在"
+        summary += "\n"
+        _append_output(summary)
+    return RedirectResponse(url="/?tab=accounts", status_code=303)
+
+
 @app.post("/register/save", response_class=HTMLResponse)
 def save_register_config(
     proxy: str = Form(""),
@@ -867,18 +894,46 @@ def continue_pay_verification():
     with STATE.lock:
         verification = dict(STATE.pay_verification or {})
         result = dict(STATE.last_pay_result or {})
+        pay_form = dict(STATE.last_pay_form or {})
         if not verification.get("required"):
             return JSONResponse({"ok": False, "message": "当前没有待处理的人工验证任务"}, status_code=400)
+    email = str(result.get("email") or pay_form.get("pay_email") or "").strip()
+    if not email:
+        return JSONResponse({"ok": False, "message": "缺少账号邮箱，无法在人工验证后刷新 team token"}, status_code=400)
+    try:
+        account = payment_bind_app.load_account(email)
+        access_token = str(account.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("账号缺少 access_token，无法刷新 team token")
+        auth = AuthClient(proxy=pay_form.get("proxy", "").strip() or None)
+        refreshed = auth.refresh_tokens(access_token)
+        if not isinstance(refreshed, dict) or not str(refreshed.get("access_token") or "").strip():
+            raise RuntimeError("refresh_tokens 未返回新的 access_token")
+        merged = dict(account)
+        merged.update(refreshed)
+        ACCOUNT_STORE.upsert_account(merged)
         verification["status"] = "manual_verification_acknowledged"
-        verification["message"] = "已确认人工验证已处理，请结合当前页面和最终支付状态继续观察结果。"
+        verification["message"] = "已确认人工验证完成，并已刷新一次 token；若已进 team 计划，当前保存的 access_token 应更新为 team token。"
         result["verification"] = verification
-        STATE.pay_verification = verification
-        STATE.last_pay_result = result
-        STATE.last_success = False
-        STATE.last_error = ""
-    _append_output("\n[PAY] 已收到前端人工验证完成确认，请结合支付页结果继续观察是否成功。\n")
-    _notify_status_update()
-    return JSONResponse({"ok": True, "verification": verification, "pay_result": result})
+        result["refreshed_tokens"] = {
+            "has_access_token": bool(str(merged.get("access_token") or "").strip()),
+            "has_refresh_token": bool(str(merged.get("refresh_token") or "").strip()),
+            "account_id": str(merged.get("account_id") or ""),
+            "expired": str(merged.get("expired") or ""),
+        }
+        with STATE.lock:
+            STATE.pay_verification = verification
+            STATE.last_pay_result = result
+            STATE.last_success = False
+            STATE.last_error = ""
+        _append_output("\n[PAY] 已收到人工验证完成确认，并已重新刷新一次 token 以获取 team 计划上下文。\n")
+        _notify_status_update()
+        return JSONResponse({"ok": True, "verification": verification, "pay_result": result})
+    except Exception as exc:
+        with STATE.lock:
+            STATE.last_error = f"人工验证后刷新 token 失败: {exc}"
+        _notify_status_update()
+        return JSONResponse({"ok": False, "message": f"人工验证后刷新 token 失败: {exc}"}, status_code=500)
 
 
 @app.get("/pay/fill-address")

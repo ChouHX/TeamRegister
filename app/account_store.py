@@ -146,6 +146,16 @@ class AccountStore:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_accounts(self, emails: Iterable[str]) -> int:
+        email_list = list(dict.fromkeys(str(email).strip() for email in emails if str(email).strip()))
+        if not email_list:
+            return 0
+        placeholders = ", ".join("?" for _ in email_list)
+        with self._connect() as conn:
+            cursor = conn.execute(f"DELETE FROM accounts WHERE email IN ({placeholders})", tuple(email_list))
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def export_account_json(self, email: str, export_dir: Path = EXPORT_DIR) -> Path:
         account = self.get_account(email)
         if not account:
