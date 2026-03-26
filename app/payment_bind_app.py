@@ -231,19 +231,31 @@ class PaymentBinder:
     def log(self, message: str) -> None:
         print(f"[bind] {message}")
 
+    def _seed_cookie(self, name: str, value: str) -> None:
+        cookie_name = str(name or "").strip()
+        cookie_value = str(value or "").strip()
+        if not cookie_name or not cookie_value:
+            return
+        if cookie_name in {"__Secure-next-auth.session-token", "__Host-next-auth.csrf-token", "_account", "oai-hlib", "cf_clearance", "__cf_bm", "_cf_uvid", "_cfuvid", "__cflb", "oai-did"}:
+            self.session.cookies.set(cookie_name, cookie_value, domain="chatgpt.com")
+            self.session.cookies.set(cookie_name, cookie_value, domain=".chatgpt.com")
+        if cookie_name in {"login_session", "auth_provider", "hydra_redirect", "oai-client-auth-session", "auth-session-minimized", "oai-did"}:
+            self.session.cookies.set(cookie_name, cookie_value, domain="auth.openai.com")
+            self.session.cookies.set(cookie_name, cookie_value, domain=".auth.openai.com")
+        self.session.cookies.set(cookie_name, cookie_value)
+
     def _bootstrap_cookies(self) -> None:
         cookies = self.account.get("cookies") or {}
         if isinstance(cookies, dict):
             for name, value in cookies.items():
-                if value:
-                    self.session.cookies.set(str(name), str(value))
+                self._seed_cookie(str(name), str(value))
         session_token = str(self.account.get("session_token") or "")
         csrf_token = str(self.account.get("csrf_token") or "")
         if session_token:
-            self.session.cookies.set("__Secure-next-auth.session-token", session_token, domain="chatgpt.com")
+            self._seed_cookie("__Secure-next-auth.session-token", session_token)
         if csrf_token:
-            self.session.cookies.set("__Host-next-auth.csrf-token", csrf_token, domain="chatgpt.com")
-        self.session.cookies.set("oai-did", self.device_id, domain="chatgpt.com")
+            self._seed_cookie("__Host-next-auth.csrf-token", csrf_token)
+        self._seed_cookie("oai-did", self.device_id)
         self._bootstrap_stripe_session()
 
     def _bootstrap_stripe_session(self) -> None:
@@ -301,6 +313,69 @@ class PaymentBinder:
             raise RuntimeError("sentinel 响应缺少 token")
         return json.dumps({"p": "", "t": "", "c": token, "id": self.device_id, "flow": "authorize_continue"}, separators=(",", ":"))
 
+    def _recover_session_via_signin_openai(self) -> tuple[str, str]:
+        self.log("检测到缺少 session_token，开始在 Pay 阶段独立补 next-auth 会话")
+        csrf_resp = self.session.get(
+            f"{CHATGPT_BASE}/api/auth/csrf",
+            headers={
+                "Accept": "application/json",
+                "Referer": f"{CHATGPT_BASE}/auth/login",
+                "User-Agent": self.ua,
+            },
+            timeout=20,
+            impersonate="chrome136",
+        )
+        if csrf_resp.status_code != 200:
+            raise RuntimeError(f"Pay 阶段获取 csrf 失败: {csrf_resp.status_code} {csrf_resp.text[:180]}")
+        csrf_data = csrf_resp.json() if csrf_resp.content else {}
+        csrf_token = str(csrf_data.get("csrfToken") or "")
+        if not csrf_token:
+            raise RuntimeError("Pay 阶段 csrf 响应缺少 csrfToken")
+
+        signin_resp = self.session.post(
+            f"{CHATGPT_BASE}/api/auth/signin/openai",
+            data={
+                "csrfToken": csrf_token,
+                "callbackUrl": f"{CHATGPT_BASE}/",
+                "json": "true",
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": CHATGPT_BASE,
+                "Referer": f"{CHATGPT_BASE}/auth/login",
+                "User-Agent": self.ua,
+            },
+            timeout=20,
+            impersonate="chrome136",
+        )
+        if signin_resp.status_code != 200:
+            raise RuntimeError(f"Pay 阶段 signin/openai 失败: {signin_resp.status_code} {signin_resp.text[:180]}")
+        signin_data = signin_resp.json() if signin_resp.content else {}
+        auth_url = str(signin_data.get("url") or "").strip()
+        if not auth_url:
+            raise RuntimeError("Pay 阶段 signin/openai 未返回授权链接")
+
+        auth_resp = self.session.get(
+            auth_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": f"{CHATGPT_BASE}/auth/login",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": self.ua,
+            },
+            allow_redirects=True,
+            timeout=30,
+            impersonate="chrome136",
+        )
+        final_url = str(auth_resp.url or "")
+        session_token = self._cookie("__Secure-next-auth.session-token")
+        csrf_cookie = self._cookie("__Host-next-auth.csrf-token") or csrf_token
+        self.log(f"Pay 阶段会话补链完成: final_url={final_url}, session_token={'yes' if session_token else 'no'}")
+        if not session_token:
+            raise RuntimeError(f"Pay 阶段未能建立 session_token: final_url={final_url}")
+        return session_token, csrf_cookie
+
     def _payment_context(self) -> dict[str, str]:
         access_token = str(self.account.get("access_token") or "").strip()
         session_token = self._cookie("__Secure-next-auth.session-token")
@@ -308,7 +383,7 @@ class PaymentBinder:
         if not access_token:
             raise RuntimeError("账号文件缺少 access_token")
         if not session_token:
-            raise RuntimeError("账号文件缺少 session_token/cookies，无法独立绑卡")
+            session_token, csrf_token = self._recover_session_via_signin_openai()
         return {
             "access_token": access_token,
             "session_token": session_token,
@@ -931,7 +1006,7 @@ def main() -> int:
     print("=" * 60)
     print("  独立绑卡工具（CLI）")
     print(f"  配置文件: {CONFIG_PATH}")
-    print(f"  账号目录: {ACCOUNTS_DIR}")
+    print(f"  账号目录: {', '.join(str(path) for path in _account_dirs())}")
     print("=" * 60)
 
     try:
