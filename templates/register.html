@@ -9,7 +9,7 @@
   <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body class="bg-slate-100 text-slate-800 min-h-screen">
-  <div class="max-w-[1600px] mx-auto px-4 py-5">
+  <div class="mx-auto w-full px-4 py-5 {% if active_tab in ['pay', 'accounts'] %}max-w-[1920px]{% else %}max-w-[1600px]{% endif %}">
     <div class="mb-4 flex items-start justify-between gap-4">
       <div>
         <h1 class="text-2xl font-bold text-slate-900">ChatGPT 管理面板</h1>
@@ -35,9 +35,9 @@
     </div>
 
     {% set accounts_fullscreen = active_tab == 'accounts' %}
-    {% set pay_fullscreen = false %}
-    <div class="grid grid-cols-1 {% if not accounts_fullscreen %}md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)]{% endif %} gap-4 items-start">
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 {% if accounts_fullscreen %}min-h-[75vh]{% endif %}">
+    {% set pay_fullscreen = active_tab == 'pay' %}
+    <div class="grid {% if accounts_fullscreen %}grid-cols-1{% elif pay_fullscreen %}grid-cols-[minmax(360px,460px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(400px,500px)_minmax(0,1fr)] items-stretch{% else %}grid-cols-1 md:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[440px_minmax(0,1fr)] items-start{% endif %} gap-4 {% if pay_fullscreen %}min-h-[calc(100vh-124px)]{% endif %}">
+      <div class="{% if active_tab == 'pay' %}min-w-0 h-full{% else %}bg-white rounded-2xl shadow-sm border border-slate-200 p-4 {% if accounts_fullscreen %}min-h-[75vh]{% endif %}{% endif %}">
         {% if active_tab == 'register' %}
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-sliders mr-2 text-indigo-500"></i>注册参数</h2>
@@ -185,8 +185,8 @@
         </form>
 
         {% elif active_tab == 'pay' %}
-        <div class="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(380px,0.92fr)_minmax(520px,1.28fr)] xl:grid-cols-[minmax(340px,0.95fr)_minmax(440px,1.25fr)] items-start">
-          <section class="min-w-0 overflow-hidden rounded-[28px] border border-slate-200 bg-white/95 shadow-sm ring-1 ring-slate-100">
+        <div class="grid h-full grid-cols-1 items-start">
+          <section class="min-w-0 h-full overflow-hidden rounded-[28px] border border-slate-200 bg-white/95 shadow-sm ring-1 ring-slate-100">
             <div class="border-b border-slate-200 bg-slate-50/80 px-5 py-4">
               <div class="flex items-start justify-between gap-4">
                 <div>
@@ -197,14 +197,14 @@
               </div>
             </div>
 
-            <div class="space-y-4 p-5">
-              <form id="payForm" method="post" action="/pay/start" class="space-y-4">
-                <div class="space-y-2">
+            <div class="flex h-full flex-col space-y-4 p-5">
+              <form id="payForm" method="post" action="/pay/start" class="flex h-full flex-col space-y-4">
+                <div class="flex-1 space-y-2 min-h-0">
                   <div class="flex items-center justify-between gap-3">
                     <label class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Access Token</label>
                     <span class="text-[11px] text-slate-400">支持直接粘贴完整 token</span>
                   </div>
-                  <textarea id="payAccessTokenInput" name="payment_access_token" rows="16" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="block min-h-[360px] w-full resize-y rounded-2xl border border-slate-300 bg-white px-3 py-3 text-xs leading-5 font-mono text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100">{{ state.last_pay_form.payment_access_token }}</textarea>
+                  <textarea id="payAccessTokenInput" name="payment_access_token" rows="16" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="block min-h-[420px] w-full flex-1 resize-y rounded-2xl border border-slate-300 bg-white px-3 py-3 text-xs leading-5 font-mono text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 2xl:min-h-[520px]">{{ state.last_pay_form.payment_access_token }}</textarea>
                 </div>
 
                 <div class="rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -319,8 +319,8 @@
         </div>
       </div>
       {% elif not accounts_fullscreen and active_tab == 'pay' %}
-      <div class="space-y-4 min-w-0">
-        <section class="min-w-0 rounded-[28px] border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 shadow-sm ring-1 ring-emerald-100/70">
+      <div class="flex h-full min-w-0 flex-col space-y-4">
+        <section class="flex h-full min-w-0 flex-col rounded-[28px] border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-teal-50 p-5 shadow-sm ring-1 ring-emerald-100/70">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0">
               <div class="flex items-center gap-3 min-w-0">
@@ -350,7 +350,7 @@
             </div>
           </div>
 
-          <div id="payHostedPagePanel" class="mt-4 rounded-[24px] border border-emerald-200 bg-white/85 p-5 shadow-sm backdrop-blur-sm">
+          <div id="payHostedPagePanel" class="mt-4 flex-1 rounded-[24px] border border-emerald-200 bg-white/85 p-5 shadow-sm backdrop-blur-sm">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <h3 class="text-sm font-semibold text-emerald-900"><i class="fa fa-external-link mr-2"></i>支付地址</h3>
