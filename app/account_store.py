@@ -28,6 +28,7 @@ class AccountRecord:
     cookies: dict[str, Any]
     expired: str
     last_refresh: str
+    password: str = ""
     type: str = "codex"
 
 
@@ -60,12 +61,16 @@ class AccountStore:
                     cookies_json TEXT NOT NULL DEFAULT '{}',
                     expired TEXT NOT NULL DEFAULT '',
                     last_refresh TEXT NOT NULL DEFAULT '',
+                    password TEXT NOT NULL DEFAULT '',
                     type TEXT NOT NULL DEFAULT 'codex',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+            if "password" not in columns:
+                conn.execute("ALTER TABLE accounts ADD COLUMN password TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS trg_accounts_updated_at
@@ -85,8 +90,8 @@ class AccountStore:
                 INSERT INTO accounts (
                     email, account_id, access_token, refresh_token, id_token,
                     session_token, csrf_token, device_id, user_agent, sec_ch_ua,
-                    cookies_json, expired, last_refresh, type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cookies_json, expired, last_refresh, password, type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET
                     account_id=excluded.account_id,
                     access_token=excluded.access_token,
@@ -100,6 +105,7 @@ class AccountStore:
                     cookies_json=excluded.cookies_json,
                     expired=excluded.expired,
                     last_refresh=excluded.last_refresh,
+                    password=CASE WHEN excluded.password <> '' THEN excluded.password ELSE accounts.password END,
                     type=excluded.type
                 """,
                 (
@@ -116,6 +122,7 @@ class AccountStore:
                     json.dumps(record.cookies, ensure_ascii=False),
                     record.expired,
                     record.last_refresh,
+                    record.password,
                     record.type,
                 ),
             )
@@ -182,6 +189,7 @@ class AccountStore:
             cookies=cookies,
             expired=str(payload.get("expired") or "").strip(),
             last_refresh=str(payload.get("last_refresh") or "").strip(),
+            password=str(payload.get("password") or "").strip(),
             type=str(payload.get("type") or "codex").strip() or "codex",
         )
 
@@ -207,5 +215,6 @@ class AccountStore:
             "device_id": row["device_id"],
             "user_agent": row["user_agent"],
             "sec_ch_ua": row["sec_ch_ua"],
+            "password": row["password"],
             "cookies": cookies,
         }

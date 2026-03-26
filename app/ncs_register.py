@@ -825,6 +825,7 @@ def _save_codex_tokens(email: str, tokens: dict, register=None):
         "device_id": device_id,
         "user_agent": user_agent,
         "sec_ch_ua": sec_ch_ua,
+        "password": str(tokens.get("password") or "").strip(),
         "cookies": cookies,
     }
 
@@ -3401,6 +3402,8 @@ def _register_one(idx, total, proxy, output_file):
             tokens = reg.perform_codex_oauth_login_http(
                 email, chatgpt_password, mail_token=mail_token, provider=provider
             )
+            if tokens:
+                tokens["password"] = chatgpt_password
             oauth_ok = bool(tokens and tokens.get("access_token"))
             if oauth_ok:
                 _save_codex_tokens(email, tokens, register=reg)
