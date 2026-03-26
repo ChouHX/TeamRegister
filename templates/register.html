@@ -287,80 +287,19 @@
 
         <div class="space-y-2 max-h-[75vh] overflow-auto pr-1">
           {% if account_rows %}
-            <div class="hidden xl:grid grid-cols-[minmax(260px,2.2fr)_minmax(160px,1.2fr)_110px_110px_90px_90px_80px_180px] gap-2 px-3 py-2 text-[11px] font-semibold text-slate-500 uppercase tracking-wide border-b border-slate-200">
-              <div>账号</div>
-              <div>过期/刷新</div>
-              <div>AT</div>
-              <div>RT</div>
-              <div>Session</div>
-              <div>CSRF</div>
-              <div>Cookies</div>
-              <div>操作</div>
-            </div>
             {% for account in account_rows %}
-            <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-              <div class="xl:hidden space-y-2">
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0">
-                    <div class="text-sm font-semibold text-slate-900 break-all">{{ account.email }}</div>
-                    <div class="text-[11px] text-slate-500 break-all">account_id={{ account.account_id or '-' }}</div>
+            <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <div class="text-sm font-semibold text-slate-900 truncate">{{ account.email }}</div>
+                    <span class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_checkout_context else 'bg-amber-100 text-amber-700' }}">
+                      {% if account.has_checkout_context %}可绑卡{% else %}缺少上下文{% endif %}
+                    </span>
                   </div>
-                  <span class="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_checkout_context else 'bg-amber-100 text-amber-700' }}">
-                    {% if account.has_checkout_context %}可绑卡{% else %}缺少上下文{% endif %}
-                  </span>
+                  <div class="mt-1 text-[11px] text-slate-500 truncate">{{ account.account_id or '-' }} · exp={{ account.expired or '-' }} · refresh={{ account.last_refresh or '-' }}</div>
                 </div>
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                  <div class="rounded-lg bg-white border border-slate-200 px-2 py-1.5">AT：{{ '有' if account.has_access_token else '无' }}</div>
-                  <div class="rounded-lg bg-white border border-slate-200 px-2 py-1.5">RT：{{ '有' if account.has_refresh_token else '无' }}</div>
-                  <div class="rounded-lg bg-white border border-slate-200 px-2 py-1.5">Session：{{ '有' if account.has_session_token else '无' }}</div>
-                  <div class="rounded-lg bg-white border border-slate-200 px-2 py-1.5">CSRF：{{ '有' if account.has_csrf_token else '无' }}</div>
-                </div>
-                <div class="flex items-center justify-between gap-3 text-[11px] text-slate-500">
-                  <div class="min-w-0">expired={{ account.expired or '-' }}</div>
-                  <div>cookies={{ account.cookies_count }}</div>
-                </div>
-                <div class="grid grid-cols-2 gap-2">
-                  <form method="post" action="/accounts/export">
-                    <input type="hidden" name="email" value="{{ account.email }}" />
-                    <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium text-sm px-3 py-2 transition">
-                      <i class="fa fa-download mr-2"></i>导出
-                    </button>
-                  </form>
-                  <form method="post" action="/accounts/delete" onsubmit="return confirm('确认删除该账号？');">
-                    <input type="hidden" name="email" value="{{ account.email }}" />
-                    <button type="submit" class="w-full inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-3 py-2 transition">
-                      <i class="fa fa-trash mr-2"></i>删除
-                    </button>
-                  </form>
-                </div>
-              </div>
-
-              <div class="hidden xl:grid grid-cols-[minmax(260px,2.2fr)_minmax(160px,1.2fr)_110px_110px_90px_90px_80px_180px] gap-2 items-center text-[12px]">
-                <div class="min-w-0">
-                  <div class="font-semibold text-slate-900 truncate">{{ account.email }}</div>
-                  <div class="text-[11px] text-slate-500 truncate">{{ account.account_id or '-' }}</div>
-                </div>
-                <div class="min-w-0 text-[11px] text-slate-500">
-                  <div class="truncate">exp={{ account.expired or '-' }}</div>
-                  <div class="truncate">refresh={{ account.last_refresh or '-' }}</div>
-                </div>
-                <div>
-                  <span class="inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_access_token else 'bg-slate-200 text-slate-600' }}">{{ '有' if account.has_access_token else '无' }}</span>
-                </div>
-                <div>
-                  <span class="inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_refresh_token else 'bg-slate-200 text-slate-600' }}">{{ '有' if account.has_refresh_token else '无' }}</span>
-                </div>
-                <div>
-                  <span class="inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_session_token else 'bg-amber-100 text-amber-700' }}">{{ '有' if account.has_session_token else '无' }}</span>
-                </div>
-                <div>
-                  <span class="inline-flex items-center justify-center rounded-md px-2 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_csrf_token else 'bg-slate-200 text-slate-600' }}">{{ '有' if account.has_csrf_token else '无' }}</span>
-                </div>
-                <div class="text-[11px] text-slate-600">{{ account.cookies_count }}</div>
-                <div class="flex items-center gap-2 justify-end">
-                  <span class="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_checkout_context else 'bg-amber-100 text-amber-700' }}">
-                    {% if account.has_checkout_context %}可绑卡{% else %}缺少上下文{% endif %}
-                  </span>
+                <div class="flex items-center gap-2 shrink-0">
                   <form method="post" action="/accounts/export" class="inline">
                     <input type="hidden" name="email" value="{{ account.email }}" />
                     <button type="submit" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium text-xs px-3 py-1.5 transition">
@@ -374,6 +313,13 @@
                     </button>
                   </form>
                 </div>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_access_token else 'bg-slate-200 text-slate-600' }}">AT {{ '有' if account.has_access_token else '无' }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_refresh_token else 'bg-slate-200 text-slate-600' }}">RT {{ '有' if account.has_refresh_token else '无' }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_session_token else 'bg-amber-100 text-amber-700' }}">Session {{ '有' if account.has_session_token else '无' }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_csrf_token else 'bg-slate-200 text-slate-600' }}">CSRF {{ '有' if account.has_csrf_token else '无' }}</span>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700">Cookies {{ account.cookies_count }}</span>
               </div>
             </div>
             {% endfor %}

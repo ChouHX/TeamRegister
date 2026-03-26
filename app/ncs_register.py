@@ -789,23 +789,25 @@ def _save_codex_tokens(email: str, tokens: dict, register=None):
         exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone(timedelta(hours=8)))
         expired_str = exp_dt.strftime("%Y-%m-%dT%H:%M:%S+08:00")
 
-    session_token = ""
-    csrf_token = ""
-    cookies = {}
-    user_agent = ""
-    sec_ch_ua = ""
-    device_id = ""
+    session_token = str(tokens.get("session_token") or "").strip()
+    csrf_token = str(tokens.get("csrf_token") or "").strip()
+    cookies = tokens.get("cookies") if isinstance(tokens.get("cookies"), dict) else {}
+    if not isinstance(cookies, dict):
+        cookies = {}
+    user_agent = str(tokens.get("user_agent") or "").strip()
+    sec_ch_ua = str(tokens.get("sec_ch_ua") or "").strip()
+    device_id = str(tokens.get("device_id") or "").strip()
     if register is not None:
-        session_token = _cookie_value(register.session, "__Secure-next-auth.session-token")
-        csrf_token = _cookie_value(register.session, "__Host-next-auth.csrf-token")
-        user_agent = str(getattr(register, "ua", "") or "")
-        sec_ch_ua = str(getattr(register, "sec_ch_ua", "") or "")
-        device_id = str(getattr(register, "device_id", "") or "")
+        session_token = session_token or _cookie_value(register.session, "__Secure-next-auth.session-token")
+        csrf_token = csrf_token or _cookie_value(register.session, "__Host-next-auth.csrf-token")
+        user_agent = user_agent or str(getattr(register, "ua", "") or "")
+        sec_ch_ua = sec_ch_ua or str(getattr(register, "sec_ch_ua", "") or "")
+        device_id = device_id or str(getattr(register, "device_id", "") or "")
         try:
             for cookie in register.session.cookies.jar:
                 name = str(getattr(cookie, "name", "") or "")
                 value = str(getattr(cookie, "value", "") or "")
-                if name and value:
+                if name and value and name not in cookies:
                     cookies[name] = value
         except Exception:
             pass
