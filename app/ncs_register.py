@@ -2303,6 +2303,32 @@ class ChatGPTRegister:
         self._log("8. Callback", "GET", url, r.status_code, {"final_url": str(r.url)})
         return r.status_code, {"final_url": str(r.url)}
 
+    def complete_chatgpt_callback(self, auth_code: str, state: str) -> tuple[int | None, dict[str, Any] | None]:
+        auth_code = str(auth_code or "").strip()
+        state = str(state or "").strip()
+        if not auth_code or not state:
+            self._print("[Session] 缺少 auth_code/state，无法显式完成 ChatGPT callback")
+            return None, None
+        callback_url = f"{self.BASE}/api/auth/callback/openai?code={auth_code}&state={state}"
+        r = self.session.get(
+            callback_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": f"{self.BASE}/",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": self.ua,
+            },
+            allow_redirects=True,
+            timeout=30,
+            impersonate=self.impersonate,
+        )
+        payload = {
+            "final_url": str(r.url),
+            "session_token": "yes" if _cookie_value(self.session, "__Secure-next-auth.session-token") else "no",
+        }
+        self._log("8.1 ChatGPT next-auth callback", "GET", callback_url, r.status_code, payload)
+        return r.status_code, payload
+
     def ensure_chatgpt_session(self) -> dict[str, Any]:
         """补齐 chatgpt 登录态，尽量拿到 session-token / csrf / accessToken。"""
         info: dict[str, Any] = {
@@ -2989,6 +3015,8 @@ class ChatGPTRegister:
         if not code:
             self._print("[OAuth] 未获取到 authorization code")
             return None
+
+        self.complete_chatgpt_callback(code, state)
 
         self._print("[OAuth] 7/7 POST /oauth/token")
         token_resp = oauth_session.post(
