@@ -2152,13 +2152,35 @@ class ChatGPTRegister:
 
     def bootstrap_signup(self, email: str):
         self._ensure_auth_session()
-        url = f"{self.AUTH}/create-account"
-        r = self.session.get(url, headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": self.ua,
-        }, allow_redirects=True, timeout=30, impersonate=self.impersonate)
-        self._log("0. Auth create-account", "GET", url, r.status_code, {"final_url": str(r.url)})
+
+        code_verifier, code_challenge = _generate_pkce()
+        state = secrets.token_urlsafe(24)
+        authorize_params = {
+            "response_type": "code",
+            "client_id": OAUTH_CLIENT_ID,
+            "redirect_uri": OAUTH_REDIRECT_URI,
+            "scope": "openid profile email offline_access",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+            "prompt": "login",
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+        }
+        bootstrap_url = f"{OAUTH_ISSUER}/oauth/authorize?{urlencode(authorize_params)}"
+        r = self.session.get(
+            bootstrap_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": f"{self.BASE}/",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": self.ua,
+            },
+            allow_redirects=True,
+            timeout=30,
+            impersonate=self.impersonate,
+        )
+        self._log("0. Bootstrap oauth/authorize", "GET", bootstrap_url, r.status_code, {"final_url": str(r.url)})
 
         continue_url = f"{self.AUTH}/create-account"
         payload = {
@@ -2178,8 +2200,13 @@ class ChatGPTRegister:
             data = resp.json()
         except Exception:
             data = {"text": resp.text[:500]}
-        self._log("1. Signup authorize/continue", "POST",
-                  f"{self.AUTH}/api/accounts/authorize/continue", resp.status_code, data)
+        self._log(
+            "1. Signup authorize/continue",
+            "POST",
+            f"{self.AUTH}/api/accounts/authorize/continue",
+            resp.status_code,
+            data,
+        )
         return resp.status_code, data
 
     def register(self, email: str, password: str):

@@ -152,19 +152,29 @@ def _reload_runtime_config() -> None:
     )
 
 
-def _save_current_config(form: dict[str, str]) -> None:
+def _normalize_upload_api_base(raw_url: str) -> str:
+    value = str(raw_url or "").strip()
+    if not value:
+        return ""
+    parsed = ncs_register.urlparse(value)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return value
+
+
+
+def _save_config_file(current: dict[str, Any]) -> None:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+
+
+
+def _save_register_config(form: dict[str, str]) -> None:
     current = _load_current_config()
-    upload_api_raw = form.get("upload_api_url", current.get("upload_api_url", "")).strip()
-    upload_api_base = ""
-    if upload_api_raw:
-        parsed = ncs_register.urlparse(upload_api_raw)
-        if parsed.scheme and parsed.netloc:
-            upload_api_base = f"{parsed.scheme}://{parsed.netloc}"
-        else:
-            upload_api_base = upload_api_raw
     current.update(
         {
             "proxy": form.get("proxy", current.get("proxy", "")).strip(),
+            "total_accounts": max(1, int(form.get("total_accounts", current.get("total_accounts", 1)) or 1)),
             "mail_provider": form.get("mail_provider", current.get("mail_provider", "duckmail")).strip(),
             "duckmail_api_base": form.get("duckmail_api_base", current.get("duckmail_api_base", "")).strip(),
             "duckmail_bearer": form.get("duckmail_bearer", current.get("duckmail_bearer", "")).strip(),
@@ -174,16 +184,45 @@ def _save_current_config(form: dict[str, str]) -> None:
             "lamail_domain": form.get("lamail_domain", current.get("lamail_domain", "")).strip(),
             "cfmail_config_path": form.get("cfmail_config_path", current.get("cfmail_config_path", "")).strip(),
             "cfmail_profile": form.get("cfmail_profile", current.get("cfmail_profile", "")).strip(),
-            "upload_api_url": upload_api_base,
+            "upload_api_url": _normalize_upload_api_base(form.get("upload_api_url", current.get("upload_api_url", ""))),
             "upload_api_token": form.get("upload_api_token", current.get("upload_api_token", "")).strip(),
             "upload_api_proxy": form.get("upload_api_proxy", current.get("upload_api_proxy", "")).strip(),
             "cpa_cleanup_enabled": form.get("cpa_cleanup_enabled", str(current.get("cpa_cleanup_enabled", False))).lower() == "true",
             "cpa_upload_every_n": max(1, int(form.get("cpa_upload_every_n", current.get("cpa_upload_every_n", 3)) or 3)),
+        }
+    )
+    _save_config_file(current)
+
+
+
+def _save_pay_config(form: dict[str, str]) -> None:
+    current = _load_current_config()
+    current.update(
+        {
+            "proxy": form.get("proxy", current.get("proxy", "")).strip(),
             "payment_country": form.get("payment_country", current.get("payment_country", "US")).strip(),
         }
     )
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
+    _save_config_file(current)
+
+
+
+def _apply_register_form_runtime(form: dict[str, str]) -> None:
+    ncs_register.DUCKMAIL_API_BASE = form.get("duckmail_api_base", ncs_register.DUCKMAIL_API_BASE).strip()
+    ncs_register.DUCKMAIL_BEARER = form.get("duckmail_bearer", ncs_register.DUCKMAIL_BEARER).strip()
+    ncs_register.TEMPMAIL_LOL_API_BASE = form.get("tempmail_lol_api_base", ncs_register.TEMPMAIL_LOL_API_BASE).strip().rstrip("/")
+    ncs_register.LAMAIL_API_BASE = form.get("lamail_api_base", ncs_register.LAMAIL_API_BASE).strip().rstrip("/")
+    ncs_register.LAMAIL_API_KEY = form.get("lamail_api_key", ncs_register.LAMAIL_API_KEY).strip()
+    ncs_register.LAMAIL_DOMAINS = ncs_register._as_csv_list(form.get("lamail_domain", ",".join(ncs_register.LAMAIL_DOMAINS)))
+    ncs_register.LAMAIL_DOMAIN_TEXT = ", ".join(ncs_register.LAMAIL_DOMAINS)
+    ncs_register.MAIL_PROVIDER = form.get("mail_provider", ncs_register.MAIL_PROVIDER).strip().lower()
+    ncs_register.UPLOAD_API_URL = _normalize_upload_api_base(form.get("upload_api_url", ncs_register.UPLOAD_API_URL))
+    ncs_register.UPLOAD_API_TOKEN = form.get("upload_api_token", ncs_register.UPLOAD_API_TOKEN).strip()
+    ncs_register.UPLOAD_API_PROXY = form.get("upload_api_proxy", ncs_register.UPLOAD_API_PROXY).strip()
+    ncs_register.CPA_CLEANUP_ENABLED = str(form.get("cpa_cleanup_enabled", "false")).lower() == "true"
+    ncs_register.CPA_UPLOAD_EVERY_N = max(1, int(form.get("cpa_upload_every_n", ncs_register.CPA_UPLOAD_EVERY_N) or 1))
+    ncs_register.DEFAULT_PROXY = form.get("proxy", ncs_register.DEFAULT_PROXY or "").strip()
+    ncs_register.DEFAULT_TOTAL_ACCOUNTS = max(1, int(form.get("total_accounts", ncs_register.DEFAULT_TOTAL_ACCOUNTS) or 1))
 
 
 def _list_account_options() -> list[dict[str, str]]:
@@ -263,12 +302,15 @@ def _watch_register_queue(queue: Queue, process: Process) -> None:
 
 
 def _register_worker(queue: Queue, *, proxy: Optional[str], total_accounts: int, max_workers: int,
-                     cpa_cleanup: bool, cpa_upload_every_n: int, run_preflight: bool) -> None:
+                     cpa_cleanup: bool, cpa_upload_every_n: int, run_preflight: bool,
+                     config_overrides: Optional[dict[str, str]] = None) -> None:
     writer = _QueueLogWriter(queue)
     success = False
     error_text = ""
     try:
         with redirect_stdout(writer), redirect_stderr(writer):
+            if config_overrides:
+                _apply_register_form_runtime(config_overrides)
             provider = ncs_register.MAIL_PROVIDER
             if run_preflight:
                 passed = ncs_register._quick_preflight(proxy=proxy, provider=provider)
@@ -376,30 +418,34 @@ def save_register_config(
     upload_api_proxy: str = Form(""),
     cpa_cleanup_enabled: str = Form("false"),
 ):
-    STATE.last_form.update(
-        {
-            "proxy": proxy,
-            "total_accounts": str(total_accounts),
-            "max_workers": str(max_workers),
-            "cpa_cleanup": cpa_cleanup,
-            "cpa_upload_every_n": str(cpa_upload_every_n),
-            "run_preflight": run_preflight,
-            "mail_provider": mail_provider,
-            "duckmail_api_base": duckmail_api_base,
-            "duckmail_bearer": duckmail_bearer,
-            "tempmail_lol_api_base": tempmail_lol_api_base,
-            "lamail_api_base": lamail_api_base,
-            "lamail_api_key": lamail_api_key,
-            "lamail_domain": lamail_domain,
-            "cfmail_config_path": cfmail_config_path,
-            "cfmail_profile": cfmail_profile,
-            "upload_api_url": upload_api_url,
-            "upload_api_token": upload_api_token,
-            "upload_api_proxy": upload_api_proxy,
-            "cpa_cleanup_enabled": cpa_cleanup_enabled,
-        }
-    )
-    _save_current_config({**STATE.last_form, **STATE.last_pay_form})
+    with STATE.lock:
+        STATE.last_form.update(
+            {
+                "proxy": proxy,
+                "total_accounts": str(total_accounts),
+                "max_workers": str(max_workers),
+                "cpa_cleanup": cpa_cleanup,
+                "cpa_upload_every_n": str(cpa_upload_every_n),
+                "run_preflight": run_preflight,
+                "mail_provider": mail_provider,
+                "duckmail_api_base": duckmail_api_base,
+                "duckmail_bearer": duckmail_bearer,
+                "tempmail_lol_api_base": tempmail_lol_api_base,
+                "lamail_api_base": lamail_api_base,
+                "lamail_api_key": lamail_api_key,
+                "lamail_domain": lamail_domain,
+                "cfmail_config_path": cfmail_config_path,
+                "cfmail_profile": cfmail_profile,
+                "upload_api_url": upload_api_url,
+                "upload_api_token": upload_api_token,
+                "upload_api_proxy": upload_api_proxy,
+                "cpa_cleanup_enabled": cpa_cleanup_enabled,
+            }
+        )
+        snapshot = dict(STATE.last_form)
+        STATE.last_error = ""
+        STATE.last_output += "\n[WEB] 注册配置已保存\n"
+    _save_register_config(snapshot)
     _reload_runtime_config()
     return RedirectResponse(url="/?tab=register", status_code=303)
 
@@ -460,9 +506,6 @@ def start_register(
         STATE.last_success = False
         STATE.last_form.update(form_data)
 
-    _save_current_config({**STATE.last_form, **STATE.last_pay_form})
-    _reload_runtime_config()
-
     queue: Queue = Queue()
     process = Process(
         target=_register_worker,
@@ -474,6 +517,7 @@ def start_register(
             "cpa_cleanup": str(cpa_cleanup).lower() == "true",
             "cpa_upload_every_n": max(1, int(cpa_upload_every_n)),
             "run_preflight": str(run_preflight).lower() == "true",
+            "config_overrides": dict(form_data),
         },
         daemon=True,
     )
@@ -542,8 +586,12 @@ def save_pay_config(
     account = ACCOUNT_STORE.get_account(pay_form["pay_email"]) or {}
     if account:
         pay_form["payment_billing_email"] = str(account.get("email") or pay_form["pay_email"])
-    STATE.last_pay_form.update(pay_form)
-    _save_current_config({**STATE.last_form, **STATE.last_pay_form})
+    with STATE.lock:
+        STATE.last_pay_form.update(pay_form)
+        snapshot = dict(STATE.last_pay_form)
+        STATE.last_error = ""
+        STATE.last_output += "\n[WEB] Pay 配置已保存\n"
+    _save_pay_config(snapshot)
     _reload_runtime_config()
     return RedirectResponse(url="/?tab=pay", status_code=303)
 
@@ -594,9 +642,6 @@ def start_pay(
         STATE.last_error = ""
         STATE.last_success = False
         STATE.last_pay_form.update(pay_form)
-
-    _save_current_config({**STATE.last_form, **STATE.last_pay_form})
-    _reload_runtime_config()
 
     thread = threading.Thread(target=_run_pay_job, kwargs={"pay_email": pay_email, "pay_form": dict(STATE.last_pay_form)}, daemon=True)
     thread.start()
