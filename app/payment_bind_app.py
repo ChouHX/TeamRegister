@@ -320,9 +320,73 @@ class PaymentBinder:
             return max(candidates)
         return None
 
+    def _stripe_api_headers(self, *, content_type: str = "application/x-www-form-urlencoded") -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "Content-Type": content_type,
+            "Origin": "https://js.stripe.com",
+            "Referer": "https://js.stripe.com/",
+            "User-Agent": self.ua,
+            "Accept-Language": "en-US,en;q=0.9",
+            "sec-ch-ua": self.sec_ch_ua,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+
+    def _normalize_checkout_session_id(self, payload: dict[str, Any]) -> str:
+        checkout_session_id = str(
+            payload.get("checkout_session_id")
+            or payload.get("session_id")
+            or payload.get("id")
+            or ""
+        ).strip()
+        if checkout_session_id:
+            return checkout_session_id
+        checkout_url = str(payload.get("checkout_url") or "")
+        match = re.search(r"/(cs_(?:live|test)_[A-Za-z0-9_]+)", checkout_url)
+        if match:
+            return match.group(1)
+        return ""
+
+    def init_stripe_hosted_page(self, checkout_session_id: str, publishable_key: str) -> dict[str, Any]:
+        stripe_version = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
+        data = {
+            "browser_locale": "zh-CN",
+            "browser_timezone": "Asia/Tokyo",
+            "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
+            "elements_session_client[client_betas][1]": "custom_checkout_manual_approval_1",
+            "elements_session_client[elements_init_source]": "custom_checkout",
+            "elements_session_client[referrer_host]": "chatgpt.com",
+            "elements_session_client[stripe_js_id]": self.stripe_js_id,
+            "elements_session_client[locale]": "zh-CN",
+            "elements_session_client[is_aggregation_expected]": "false",
+            "key": publishable_key,
+            "_stripe_version": stripe_version,
+        }
+        resp = self.stripe_session.post(
+            f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init",
+            data=data,
+            headers=self._stripe_api_headers(),
+            timeout=30,
+            impersonate="chrome136",
+        )
+        body_preview = (resp.text or "")[:500].replace("\n", " ").replace("\r", " ")
+        try:
+            payload = resp.json() if resp.content else {}
+        except Exception:
+            payload = {"body_preview": body_preview}
+        self.log(f"payment_pages/init: status={resp.status_code} body={body_preview[:220]}")
+        if resp.status_code == 200 and isinstance(payload, dict):
+            hosted_url = str(payload.get("stripe_hosted_url") or "").strip()
+            if hosted_url:
+                self.log(f"提取到 stripe_hosted_url: {hosted_url}")
+            return payload
+        return payload if isinstance(payload, dict) else {}
+
     def create_checkout(self) -> dict[str, Any]:
         self.log("开始创建 checkout session")
         ctx = self._payment_context()
+        payment_country = str(self.config.get("payment_country", "JP") or "JP").upper()
         payload = {
             "plan_name": DEFAULT_PAYMENT_PLAN_NAME,
             "team_plan_data": {
@@ -331,8 +395,8 @@ class PaymentBinder:
                 "seat_quantity": DEFAULT_PAYMENT_SEAT_QUANTITY,
             },
             "billing_details": {
-                "country": str(self.config.get("payment_country", "JP") or "JP").upper(),
-                "currency": "USD" if str(self.config.get("payment_country", "US") or "US").upper() == "US" else "GBP",
+                "country": payment_country,
+                "currency": "USD" if payment_country == "US" else "GBP",
             },
             "cancel_url": DEFAULT_PAYMENT_CANCEL_URL,
             "checkout_ui_mode": DEFAULT_PAYMENT_CHECKOUT_UI_MODE,
@@ -344,16 +408,22 @@ class PaymentBinder:
                 "is_coupon_from_query_param": True,
             }
         headers = {
-            "Accept": "*/*",
+            "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ctx['access_token']}",
             "Origin": CHATGPT_BASE,
-            "Referer": DEFAULT_PAYMENT_REFERRER,
+            "Referer": f"https://chatgpt.com/?promo_campaign={DEFAULT_PAYMENT_PROMO_CAMPAIGN_ID.replace('-', '')}#team-pricing",
             "User-Agent": self.ua,
             "oai-device-id": self.device_id,
             "openai-sentinel-token": ctx["sentinel_token"],
-            "oai-client-version": "prod-payment-protocol",
+            "oai-client-version": "prod-d7360e59f",
             "oai-client-build-number": "payment-protocol",
+            "sec-ch-ua": self.sec_ch_ua,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
         }
         if ctx["csrf_token"]:
             headers["x-csrf-token"] = ctx["csrf_token"]
@@ -368,7 +438,7 @@ class PaymentBinder:
         if resp.status_code != 200:
             raise RuntimeError(f"checkout 失败: {resp.status_code} {resp.text[:250]}")
         data = resp.json()
-        checkout_session_id = str(data.get("checkout_session_id") or data.get("session_id") or "")
+        checkout_session_id = self._normalize_checkout_session_id(data)
         client_secret = str(data.get("client_secret") or "")
         self.stripe_publishable_key = self._extract_publishable_key(data)
         expected_amount = self._extract_expected_amount(data)
@@ -385,12 +455,21 @@ class PaymentBinder:
             raise RuntimeError(f"checkout 响应缺少 checkout_session_id: {data}")
         checkout_url = f"{CHATGPT_BASE}/checkout/openai_llc/{checkout_session_id}"
         self.log(f"生成 checkout_url: {checkout_url}")
+
+        stripe_hosted_url = ""
+        if self.stripe_publishable_key:
+            init_payload = self.init_stripe_hosted_page(checkout_session_id, self.stripe_publishable_key)
+            stripe_hosted_url = str(init_payload.get("stripe_hosted_url") or "").strip()
+            if stripe_hosted_url and expected_amount is None:
+                expected_amount = self._extract_expected_amount(init_payload)
+
         return {
             "checkout_session_id": checkout_session_id,
             "client_secret": client_secret,
             "publishable_key": self.stripe_publishable_key,
             "expected_amount": expected_amount,
             "checkout_url": checkout_url,
+            "stripe_hosted_url": stripe_hosted_url,
             "raw": data,
         }
 

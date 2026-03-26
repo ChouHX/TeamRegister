@@ -2338,6 +2338,7 @@ class ChatGPTRegister:
             "csrf_token": "",
             "access_token": "",
             "final_url": "",
+            "cookies": {},
         }
 
         try:
@@ -2399,18 +2400,275 @@ class ChatGPTRegister:
         except Exception as exc:
             self._print(f"[Session] 获取 /api/auth/session 失败: {exc}")
 
+        cookies: dict[str, str] = {}
+        try:
+            for cookie in self.session.cookies.jar:
+                name = str(getattr(cookie, "name", "") or "")
+                value = str(getattr(cookie, "value", "") or "")
+                if name and value:
+                    cookies[name] = value
+        except Exception:
+            pass
+
         info.update(
             {
                 "session_token": _cookie_value(self.session, "__Secure-next-auth.session-token") or session_token,
                 "csrf_token": _cookie_value(self.session, "__Host-next-auth.csrf-token") or csrf_token,
                 "access_token": access_token,
+                "cookies": cookies,
             }
         )
         self._print(
             f"[Session] 补齐结果: session_token={'yes' if info['session_token'] else 'no'}, "
-            f"csrf_token={'yes' if info['csrf_token'] else 'no'}, access_token={'yes' if info['access_token'] else 'no'}"
+            f"csrf_token={'yes' if info['csrf_token'] else 'no'}, access_token={'yes' if info['access_token'] else 'no'}, cookies={len(cookies)}"
         )
         return info
+
+    def establish_chatgpt_web_session(self, email: str, password: str, mail_token: str | None = None,
+                                      provider: str = "duckmail") -> dict[str, Any]:
+        """通过 chatgpt.com 自身的 signin/openai 链建立 next-auth 登录态。"""
+        self._print("[Session] 开始通过 ChatGPT 登录链建立 next-auth 会话...")
+        web_session = curl_requests.Session(impersonate=self.impersonate)
+        if self.proxy:
+            web_session.proxies = {"http": self.proxy, "https": self.proxy}
+        web_session.headers.update(dict(self.session.headers))
+        web_session.cookies.set("oai-did", self.device_id, domain="chatgpt.com")
+        web_session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
+        web_session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
+
+        original_session = self.session
+        self.session = web_session
+        try:
+            self.visit_homepage()
+            csrf = self.get_csrf()
+            auth_url = self.signin(email, csrf)
+            parsed = urlparse(auth_url)
+            chatgpt_state = parse_qs(parsed.query).get("state", [""])[0]
+            final_url = self.authorize(auth_url)
+            continue_referer = final_url if final_url.startswith(OAUTH_ISSUER) else f"{OAUTH_ISSUER}/log-in"
+
+            sentinel_authorize = build_sentinel_token(
+                self.session,
+                self.device_id,
+                flow="authorize_continue",
+                user_agent=self.ua,
+                sec_ch_ua=self.sec_ch_ua,
+                impersonate=self.impersonate,
+            )
+            if not sentinel_authorize:
+                raise RuntimeError("ChatGPT 登录链 sentinel authorize token 生成失败")
+
+            resp_continue = self.session.post(
+                f"{OAUTH_ISSUER}/api/accounts/authorize/continue",
+                json={
+                    "username": {"kind": "email", "value": email},
+                    "screen_hint": "login",
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Origin": OAUTH_ISSUER,
+                    "Referer": continue_referer,
+                    "User-Agent": self.ua,
+                    "oai-device-id": self.device_id,
+                    "openai-sentinel-token": sentinel_authorize,
+                    **_make_trace_headers(),
+                },
+                timeout=30,
+                allow_redirects=False,
+                impersonate=self.impersonate,
+            )
+            if resp_continue.status_code != 200:
+                raise RuntimeError(f"ChatGPT 登录链 authorize/continue 失败: {resp_continue.status_code} {resp_continue.text[:220]}")
+            continue_data = resp_continue.json()
+            continue_url = str(continue_data.get("continue_url") or "").strip()
+            if continue_url.startswith("/"):
+                continue_url = f"{OAUTH_ISSUER}{continue_url}"
+            if continue_url:
+                try:
+                    self.session.get(
+                        continue_url,
+                        headers={
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Referer": continue_referer,
+                            "Upgrade-Insecure-Requests": "1",
+                            "User-Agent": self.ua,
+                        },
+                        allow_redirects=True,
+                        timeout=30,
+                        impersonate=self.impersonate,
+                    )
+                except Exception:
+                    pass
+
+            sentinel_pwd = build_sentinel_token(
+                self.session,
+                self.device_id,
+                flow="password_verify",
+                user_agent=self.ua,
+                sec_ch_ua=self.sec_ch_ua,
+                impersonate=self.impersonate,
+            )
+            if not sentinel_pwd:
+                raise RuntimeError("ChatGPT 登录链 sentinel password token 生成失败")
+
+            resp_verify = self.session.post(
+                f"{OAUTH_ISSUER}/api/accounts/password/verify",
+                json={"password": password},
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Origin": OAUTH_ISSUER,
+                    "Referer": f"{OAUTH_ISSUER}/log-in/password",
+                    "User-Agent": self.ua,
+                    "oai-device-id": self.device_id,
+                    "openai-sentinel-token": sentinel_pwd,
+                    **_make_trace_headers(),
+                },
+                timeout=30,
+                allow_redirects=False,
+                impersonate=self.impersonate,
+            )
+            if resp_verify.status_code != 200:
+                raise RuntimeError(f"ChatGPT 登录链 password/verify 失败: {resp_verify.status_code} {resp_verify.text[:220]}")
+            verify_data = resp_verify.json()
+            continue_url = str(verify_data.get("continue_url") or continue_url or "").strip()
+            page_type = (verify_data.get("page") or {}).get("type", "")
+
+            need_oauth_otp = (
+                page_type == "email_otp_verification"
+                or "email-verification" in continue_url
+                or "email-otp" in continue_url
+            )
+            if need_oauth_otp:
+                if not mail_token:
+                    raise RuntimeError("ChatGPT 登录链需要邮箱 OTP，但缺少 mail_token")
+                tried_codes: set[str] = set()
+                otp_success = False
+                otp_deadline = time.time() + 120
+                while time.time() < otp_deadline and not otp_success:
+                    candidate_codes: list[str] = []
+                    if provider == "cfmail":
+                        messages = self._fetch_emails_cfmail(mail_token)
+                        for msg in messages[:12]:
+                            content = "\n".join([
+                                str(msg.get("address") or ""),
+                                str(msg.get("raw") or ""),
+                                json.dumps(msg.get("metadata") or {}, ensure_ascii=False),
+                            ])
+                            for pattern in [r"(\d{6})"]:
+                                m = re.search(pattern, content, re.I | re.S)
+                                if m and m.group(1) not in tried_codes:
+                                    candidate_codes.append(m.group(1))
+                                    break
+                    elif provider == "tempmail_lol":
+                        messages = self._fetch_emails_tempmail_lol(mail_token) or []
+                        for msg in messages[:20]:
+                            content = " ".join([
+                                str(msg.get("subject") or ""),
+                                str(msg.get("body") or ""),
+                                str(msg.get("html") or ""),
+                                str(msg.get("from") or ""),
+                            ])
+                            code = self._extract_verification_code(content)
+                            if code and code not in tried_codes:
+                                candidate_codes.append(code)
+                    elif provider == "lamail":
+                        messages = self._fetch_emails_lamail(mail_token, email) or []
+                        for msg in messages[:20]:
+                            msg_id = str(msg.get("id") or "").strip()
+                            content = "\n".join([
+                                str(msg.get("subject") or ""),
+                                str(msg.get("text") or ""),
+                                str(msg.get("html") or ""),
+                                str(msg.get("from") or ""),
+                            ])
+                            if "openai" not in content.lower() and "chatgpt" not in content.lower():
+                                detail = self._fetch_email_detail_lamail(mail_token, msg_id)
+                                if detail:
+                                    content = "\n".join([
+                                        str(detail.get("subject") or ""),
+                                        str(detail.get("text") or ""),
+                                        str(detail.get("html") or ""),
+                                        str(detail.get("from") or ""),
+                                    ])
+                            code = self._extract_verification_code(content)
+                            if code and code not in tried_codes:
+                                candidate_codes.append(code)
+                    else:
+                        messages = self._fetch_emails_duckmail(mail_token) or []
+                        for msg in messages[:12]:
+                            msg_id = msg.get("id") or msg.get("@id")
+                            if not msg_id:
+                                continue
+                            detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
+                            if not detail:
+                                continue
+                            code = self._extract_verification_code(detail.get("text") or detail.get("html") or "")
+                            if code and code not in tried_codes:
+                                candidate_codes.append(code)
+
+                    if not candidate_codes:
+                        time.sleep(2)
+                        continue
+
+                    for otp_code in candidate_codes:
+                        tried_codes.add(otp_code)
+                        resp_otp = self.session.post(
+                            f"{OAUTH_ISSUER}/api/accounts/email-otp/validate",
+                            json={"code": otp_code},
+                            headers={
+                                "Accept": "application/json",
+                                "Content-Type": "application/json",
+                                "Origin": OAUTH_ISSUER,
+                                "Referer": f"{OAUTH_ISSUER}/email-verification",
+                                "User-Agent": self.ua,
+                                "oai-device-id": self.device_id,
+                                **_make_trace_headers(),
+                            },
+                            timeout=30,
+                            allow_redirects=False,
+                            impersonate=self.impersonate,
+                        )
+                        if resp_otp.status_code != 200:
+                            continue
+                        otp_data = resp_otp.json()
+                        continue_url = str(otp_data.get("continue_url") or continue_url or "").strip()
+                        page_type = (otp_data.get("page") or {}).get("type", "") or page_type
+                        otp_success = True
+                        break
+                    if not otp_success:
+                        time.sleep(2)
+                if not otp_success:
+                    raise RuntimeError("ChatGPT 登录链 OTP 验证失败")
+
+            callback_code = None
+            callback_hint = continue_url
+            if callback_hint and callback_hint.startswith("/"):
+                callback_hint = f"{OAUTH_ISSUER}{callback_hint}"
+            if callback_hint:
+                callback_code, _ = self._oauth_follow_for_code(callback_hint, referer=f"{OAUTH_ISSUER}/log-in/password")
+            if not callback_code:
+                fallback_consent = f"{OAUTH_ISSUER}/sign-in-with-chatgpt/codex/consent"
+                callback_code = self._oauth_submit_workspace_and_org(fallback_consent)
+                if not callback_code:
+                    callback_code, _ = self._oauth_follow_for_code(fallback_consent, referer=f"{OAUTH_ISSUER}/log-in/password")
+            if not callback_code:
+                raise RuntimeError("ChatGPT 登录链未获取到 callback code")
+
+            _, payload = self.complete_chatgpt_callback(callback_code, chatgpt_state)
+            session_info = self.ensure_chatgpt_session()
+            if not session_info.get("session_token"):
+                raise RuntimeError(
+                    f"ChatGPT next-auth callback 未建立成功: final_url={str((payload or {}).get('final_url') or '')}"
+                )
+            self._print("[Session] ChatGPT next-auth 会话建立成功")
+            return session_info
+        finally:
+            if _cookie_value(web_session, "__Secure-next-auth.session-token"):
+                self.session = web_session
+            else:
+                self.session = original_session
 
     # ==================== 自动注册主流程 ====================
 
@@ -3052,12 +3310,24 @@ class ChatGPTRegister:
 
         self.session = oauth_session
         session_info = self.ensure_chatgpt_session()
+        if not session_info.get("session_token"):
+            self._print("[OAuth] 直接补齐 ChatGPT 会话失败，回退到 ChatGPT 登录链建 session...")
+            session_info = self.establish_chatgpt_web_session(
+                email,
+                password,
+                mail_token=mail_token,
+                provider=provider,
+            )
         if session_info.get("session_token"):
             data["session_token"] = session_info.get("session_token")
         if session_info.get("csrf_token"):
             data["csrf_token"] = session_info.get("csrf_token")
+        if session_info.get("cookies"):
+            data["cookies"] = session_info.get("cookies")
         if not data.get("access_token") and session_info.get("access_token"):
             data["access_token"] = session_info.get("access_token")
+        if not data.get("session_token"):
+            raise RuntimeError("OAuth 成功，但未能建立 ChatGPT next-auth session，无法生成独立绑卡账号")
         self._print("[OAuth] Codex Token 获取成功")
         return data
 
