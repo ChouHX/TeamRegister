@@ -641,9 +641,7 @@ class PaymentBinder:
         session_token = self._cookie("__Secure-next-auth.session-token")
         csrf_token = self._cookie("__Host-next-auth.csrf-token")
         if not access_token:
-            raise RuntimeError("账号文件缺少 access_token")
-        if not session_token:
-            session_token, csrf_token = self._recover_session_via_signin_openai()
+            raise RuntimeError("账号缺少 access_token")
         return {
             "access_token": access_token,
             "session_token": session_token,
@@ -806,7 +804,7 @@ class PaymentBinder:
     def create_checkout(self) -> dict[str, Any]:
         self.log("开始创建 checkout session")
         ctx = self._payment_context()
-        payment_country = str(self.config.get("payment_country", "JP") or "JP").upper()
+        payment_country = str(self.config.get("payment_country", "US") or "US").upper()
         payload = {
             "plan_name": DEFAULT_PAYMENT_PLAN_NAME,
             "team_plan_data": {
