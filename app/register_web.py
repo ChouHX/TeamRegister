@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import traceback
@@ -46,6 +47,7 @@ class RegisterState:
         self.log_version = 0
         self.status_version = 0
         self.ws_clients: set[WebSocket] = set()
+        self.ws_loop: Optional[asyncio.AbstractEventLoop] = None
 
     @staticmethod
     def _default_register_form() -> dict[str, str]:
@@ -124,6 +126,17 @@ async def _broadcast_ws(message: dict[str, Any]) -> None:
 
 
 
+def _schedule_ws_broadcast(message: dict[str, Any]) -> None:
+    loop = STATE.ws_loop
+    if loop is None or loop.is_closed():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_broadcast_ws(message), loop)
+    except Exception:
+        return
+
+
+
 def _notify_status_update() -> None:
     with STATE.lock:
         STATE.status_version += 1
@@ -135,12 +148,7 @@ def _notify_status_update() -> None:
             "last_success": STATE.last_success,
             "status_version": STATE.status_version,
         }
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        loop.create_task(_broadcast_ws(payload))
-    except RuntimeError:
-        return
+    _schedule_ws_broadcast(payload)
 
 
 
@@ -153,15 +161,9 @@ def _append_output(message: str) -> None:
         payload = {
             "type": "log",
             "chunk": message,
-            "full": STATE.last_output,
             "log_version": STATE.log_version,
         }
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        loop.create_task(_broadcast_ws(payload))
-    except RuntimeError:
-        return
+    _schedule_ws_broadcast(payload)
 
 
 def _load_current_config() -> dict[str, Any]:
@@ -480,6 +482,7 @@ def get_status():
 async def websocket_status(websocket: WebSocket):
     await websocket.accept()
     with STATE.lock:
+        STATE.ws_loop = asyncio.get_running_loop()
         STATE.ws_clients.add(websocket)
         init_payload = {
             "type": "init",
@@ -494,8 +497,12 @@ async def websocket_status(websocket: WebSocket):
     await websocket.send_text(json.dumps(init_payload, ensure_ascii=False))
     try:
         while True:
-            await websocket.receive_text()
+            await asyncio.sleep(30)
+            await websocket.send_text(json.dumps({"type": "ping"}, ensure_ascii=False))
     except WebSocketDisconnect:
+        with STATE.lock:
+            STATE.ws_clients.discard(websocket)
+    except Exception:
         with STATE.lock:
             STATE.ws_clients.discard(websocket)
 
@@ -511,7 +518,7 @@ def export_account(email: str = Form("")):
         path = ACCOUNT_STORE.export_account_json(target)
         with STATE.lock:
             STATE.last_error = ""
-            STATE.last_output += f"\n[ACCOUNTS] 已导出账号文件: {path.name}\n"
+        _append_output(f"\n[ACCOUNTS] 已导出账号文件: {path.name}\n")
     except Exception as exc:
         with STATE.lock:
             STATE.last_error = f"导出失败: {exc}"
@@ -531,9 +538,10 @@ def delete_account(email: str = Form("")):
             if STATE.last_pay_form.get("pay_email") == target:
                 STATE.last_pay_form["pay_email"] = ""
             STATE.last_error = ""
-            STATE.last_output += f"\n[ACCOUNTS] 已删除账号: {target}\n"
         else:
             STATE.last_error = f"删除失败：账号不存在 {target}"
+    if deleted:
+        _append_output(f"\n[ACCOUNTS] 已删除账号: {target}\n")
     return RedirectResponse(url="/?tab=accounts", status_code=303)
 
 

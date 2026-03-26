@@ -22,13 +22,13 @@
     </div>
 
     <div class="mb-4 flex gap-2 flex-wrap">
-      <a href="/?tab=register" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'register' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+      <a href="/?tab=register" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'register' %}bg-indigo-600 text-white shadow-sm{% else %}bg-white text-slate-700 border border-slate-200 hover:bg-slate-50{% endif %}">
         <i class="fa fa-user-plus mr-2"></i>注册
       </a>
-      <a href="/?tab=pay" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'pay' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+      <a href="/?tab=pay" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'pay' %}bg-indigo-600 text-white shadow-sm{% else %}bg-white text-slate-700 border border-slate-200 hover:bg-slate-50{% endif %}">
         <i class="fa fa-credit-card mr-2"></i>Pay
       </a>
-      <a href="/?tab=accounts" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'accounts' %}bg-indigo-600 text-white{% else %}bg-white text-slate-700 border border-slate-200{% endif %}">
+      <a href="/?tab=accounts" class="inline-flex items-center rounded-lg px-4 py-2 text-sm font-medium {% if active_tab == 'accounts' %}bg-indigo-600 text-white shadow-sm{% else %}bg-white text-slate-700 border border-slate-200 hover:bg-slate-50{% endif %}">
         <i class="fa fa-database mr-2"></i>账户管理
       </a>
     </div>
@@ -280,54 +280,68 @@
           </div>
         </form>
         {% else %}
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-database mr-2 text-violet-500"></i>账户管理</h2>
-          <span class="text-[11px] text-slate-400">基于 SQLite 账号库管理导出 / 删除 / 绑卡可用性</span>
+        <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3 mb-4">
+          <div>
+            <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-database mr-2 text-violet-500"></i>账户管理</h2>
+            <p class="text-[11px] text-slate-400 mt-1">表格化管理 SQLite 账号，支持搜索筛选与批量导出。Session 在 Pay 阶段按需获取。</p>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="relative">
+              <i class="fa fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+              <input id="accountSearchInput" type="text" placeholder="搜索邮箱 / account_id" class="w-72 max-w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <button type="button" id="selectAllAccountsBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs px-3 py-2 transition">全选</button>
+            <button type="button" id="clearAccountsSelectionBtn" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs px-3 py-2 transition">清空</button>
+            <button type="button" id="batchExportBtn" class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs px-3 py-2 transition disabled:opacity-50" disabled>批量导出</button>
+          </div>
         </div>
 
-        <div class="space-y-2 max-h-[75vh] overflow-auto pr-1">
-          {% if account_rows %}
-            {% for account in account_rows %}
-            <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5">
-              <div class="flex items-center justify-between gap-3">
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2 min-w-0">
-                    <div class="text-sm font-semibold text-slate-900 truncate">{{ account.email }}</div>
-                    <span class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_checkout_context else 'bg-amber-100 text-amber-700' }}">
-                      {% if account.has_checkout_context %}可绑卡{% else %}缺少上下文{% endif %}
-                    </span>
-                  </div>
-                  <div class="mt-1 text-[11px] text-slate-500 truncate">{{ account.account_id or '-' }} · exp={{ account.expired or '-' }} · refresh={{ account.last_refresh or '-' }}</div>
+        <div class="rounded-2xl border border-slate-200 overflow-hidden bg-white">
+          <div class="grid grid-cols-[40px_minmax(260px,2fr)_minmax(260px,1.6fr)_minmax(170px,1fr)_190px] gap-3 px-4 py-3 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <div class="flex items-center justify-center"><input id="accountMasterCheckbox" type="checkbox" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" /></div>
+            <div>账号</div>
+            <div>状态标签</div>
+            <div>时间</div>
+            <div class="text-right">操作</div>
+          </div>
+          <div id="accountsTableBody" class="max-h-[72vh] overflow-auto divide-y divide-slate-200">
+            {% if account_rows %}
+              {% for account in account_rows %}
+              <div class="grid grid-cols-[40px_minmax(260px,2fr)_minmax(260px,1.6fr)_minmax(170px,1fr)_190px] gap-3 px-4 py-3 items-center account-row hover:bg-slate-50/80" data-account-row data-search-text="{{ (account.email ~ ' ' ~ account.account_id)|lower }}">
+                <div class="flex items-center justify-center">
+                  <input type="checkbox" class="account-checkbox h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" value="{{ account.email }}" />
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold text-slate-900 truncate">{{ account.email }}</div>
+                  <div class="mt-1 text-[11px] text-slate-500 truncate">{{ account.account_id or '-' }}</div>
+                </div>
+                <div class="flex flex-wrap gap-1.5">
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_access_token else 'bg-slate-200 text-slate-600' }}">AT {{ '有' if account.has_access_token else '无' }}</span>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_refresh_token else 'bg-slate-200 text-slate-600' }}">RT {{ '有' if account.has_refresh_token else '无' }}</span>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-slate-200 text-slate-600">Session 按需获取</span>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_csrf_token else 'bg-slate-200 text-slate-600' }}">CSRF {{ '有' if account.has_csrf_token else '无' }}</span>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700">Cookies {{ account.cookies_count }}</span>
+                </div>
+                <div class="text-[11px] text-slate-500 leading-5">
+                  <div class="truncate">exp={{ account.expired or '-' }}</div>
+                  <div class="truncate">refresh={{ account.last_refresh or '-' }}</div>
+                </div>
+                <div class="flex items-center justify-end gap-2">
                   <form method="post" action="/accounts/export" class="inline">
                     <input type="hidden" name="email" value="{{ account.email }}" />
-                    <button type="submit" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium text-xs px-3 py-1.5 transition">
-                      导出
-                    </button>
+                    <button type="submit" class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-medium text-xs px-3 py-1.5 transition">导出</button>
                   </form>
                   <form method="post" action="/accounts/delete" class="inline" onsubmit="return confirm('确认删除该账号？');">
                     <input type="hidden" name="email" value="{{ account.email }}" />
-                    <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs px-3 py-1.5 transition">
-                      删除
-                    </button>
+                    <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs px-3 py-1.5 transition">删除</button>
                   </form>
                 </div>
               </div>
-              <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_access_token else 'bg-slate-200 text-slate-600' }}">AT {{ '有' if account.has_access_token else '无' }}</span>
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_refresh_token else 'bg-slate-200 text-slate-600' }}">RT {{ '有' if account.has_refresh_token else '无' }}</span>
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_session_token else 'bg-amber-100 text-amber-700' }}">Session {{ '有' if account.has_session_token else '无' }}</span>
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium {{ 'bg-emerald-100 text-emerald-700' if account.has_csrf_token else 'bg-slate-200 text-slate-600' }}">CSRF {{ '有' if account.has_csrf_token else '无' }}</span>
-                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700">Cookies {{ account.cookies_count }}</span>
-              </div>
-            </div>
-            {% endfor %}
-          {% else %}
-            <div class="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              当前 SQLite 中暂无账号记录。
-            </div>
-          {% endif %}
+              {% endfor %}
+            {% else %}
+              <div class="px-4 py-10 text-center text-sm text-slate-500">当前 SQLite 中暂无账号记录。</div>
+            {% endif %}
+          </div>
         </div>
         {% endif %}
       </div>
@@ -537,6 +551,86 @@
 
       switchSection();
       if (mailProviderSelect) switchMailSection(mailProviderSelect.value);
+    }
+
+    if (activeTab === 'accounts') {
+      const searchInput = document.getElementById('accountSearchInput');
+      const rows = Array.from(document.querySelectorAll('[data-account-row]'));
+      const rowCheckboxes = Array.from(document.querySelectorAll('.account-checkbox'));
+      const masterCheckbox = document.getElementById('accountMasterCheckbox');
+      const selectAllBtn = document.getElementById('selectAllAccountsBtn');
+      const clearBtn = document.getElementById('clearAccountsSelectionBtn');
+      const batchExportBtn = document.getElementById('batchExportBtn');
+
+      function visibleRows() {
+        return rows.filter((row) => !row.classList.contains('hidden'));
+      }
+
+      function selectedEmails() {
+        return rowCheckboxes.filter((cb) => cb.checked).map((cb) => cb.value);
+      }
+
+      function updateBatchState() {
+        const selected = selectedEmails();
+        if (batchExportBtn) {
+          batchExportBtn.disabled = selected.length === 0;
+          batchExportBtn.textContent = selected.length ? `批量导出 (${selected.length})` : '批量导出';
+        }
+        if (masterCheckbox) {
+          const visible = visibleRows().map((row) => row.querySelector('.account-checkbox')).filter(Boolean);
+          masterCheckbox.checked = visible.length > 0 && visible.every((cb) => cb.checked);
+          masterCheckbox.indeterminate = visible.some((cb) => cb.checked) && !masterCheckbox.checked;
+        }
+      }
+
+      function filterRows() {
+        const keyword = (searchInput?.value || '').trim().toLowerCase();
+        rows.forEach((row) => {
+          const text = row.dataset.searchText || '';
+          row.classList.toggle('hidden', !!keyword && !text.includes(keyword));
+        });
+        updateBatchState();
+      }
+
+      searchInput?.addEventListener('input', filterRows);
+      rowCheckboxes.forEach((cb) => cb.addEventListener('change', updateBatchState));
+      masterCheckbox?.addEventListener('change', () => {
+        const checked = masterCheckbox.checked;
+        visibleRows().forEach((row) => {
+          const cb = row.querySelector('.account-checkbox');
+          if (cb) cb.checked = checked;
+        });
+        updateBatchState();
+      });
+      selectAllBtn?.addEventListener('click', () => {
+        visibleRows().forEach((row) => {
+          const cb = row.querySelector('.account-checkbox');
+          if (cb) cb.checked = true;
+        });
+        updateBatchState();
+      });
+      clearBtn?.addEventListener('click', () => {
+        rowCheckboxes.forEach((cb) => { cb.checked = false; });
+        updateBatchState();
+      });
+      batchExportBtn?.addEventListener('click', () => {
+        const selected = selectedEmails();
+        if (!selected.length) return;
+        selected.forEach((email) => {
+          const form = document.createElement('form');
+          form.method = 'post';
+          form.action = '/accounts/export';
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'email';
+          input.value = email;
+          form.appendChild(input);
+          document.body.appendChild(form);
+          form.submit();
+          form.remove();
+        });
+      });
+      filterRows();
     }
 
     document.querySelectorAll('button[data-submit-action]').forEach((button) => {

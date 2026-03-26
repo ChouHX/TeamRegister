@@ -1,0 +1,8 @@
+先运行protocol.py
+会生成tokens.txt，格式：email:account_id:client_id:refresh_token:access_token:id_token
+会生成payment.txt，格式：email:支付连接
+手动打开支付链接去支付
+全部支付完运行 fetch_team_tokens.py
+会生成tokens_team.txt，格式：email:account_id:client_id:refresh_token:access_token:id_token
+token_team.txt里的ak可以用论坛里的子号注册机去上号
+config里的oauth_client_id要自己写
