@@ -17,7 +17,6 @@ from fastapi.templating import Jinja2Templates
 from app import ncs_register, payment_bind_app
 from app.account_store import AccountStore
 from app.address_generator import generate_billing_address
-from app.auth_client import AuthClient
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -44,6 +43,7 @@ class RegisterState:
         self.last_pay_form = self._default_pay_form()
         self.last_pay_result: dict[str, Any] = {}
         self.pay_verification: dict[str, Any] = {}
+        self.pay_hosted_page: dict[str, Any] = {}
         self.pay_thread: Optional[threading.Thread] = None
         self.register_process: Optional[Process] = None
         self.register_log_thread: Optional[threading.Thread] = None
@@ -85,6 +85,7 @@ class RegisterState:
             "pay_email": "",
             "proxy": str(cfg.get("proxy", "")),
             "payment_country": str(cfg.get("payment_country", "US")),
+            "payment_access_token": "",
             "payment_card_number": "",
             "payment_card_exp_month": "",
             "payment_card_exp_year": "",
@@ -153,6 +154,7 @@ def _notify_status_update() -> None:
             "status_version": STATE.status_version,
             "pay_result": STATE.last_pay_result,
             "pay_verification": STATE.pay_verification,
+            "pay_hosted_page": STATE.pay_hosted_page,
         }
     _schedule_ws_broadcast(payload)
 
@@ -297,6 +299,7 @@ def _list_account_options() -> list[dict[str, str]]:
             "email": str(row.get("email") or ""),
             "account_id": str(row.get("account_id") or ""),
             "expired": str(row.get("expired") or ""),
+            "access_token": str(row.get("access_token") or ""),
         }
         for row in ACCOUNT_STORE.list_accounts()
     ]
@@ -420,38 +423,85 @@ def _register_worker(queue: Queue, *, proxy: Optional[str], total_accounts: int,
 def _run_pay_job(*, pay_email: str, pay_form: dict[str, str]) -> None:
     success = False
     error_text = ""
-    writer = _QueueLogWriter(_ImmediateQueue())
     try:
-        with redirect_stdout(writer), redirect_stderr(writer):
-            cfg = payment_bind_app.load_config()
-            cfg.update(
-                {
-                    "proxy": pay_form.get("proxy", "").strip(),
-                    "payment_country": pay_form.get("payment_country", "US").strip(),
-                    "payment_card_number": pay_form.get("payment_card_number", "").strip(),
-                    "payment_card_exp_month": pay_form.get("payment_card_exp_month", "").strip(),
-                    "payment_card_exp_year": pay_form.get("payment_card_exp_year", "").strip(),
-                    "payment_card_cvc": pay_form.get("payment_card_cvc", "").strip(),
-                    "payment_billing_name": pay_form.get("payment_billing_name", "").strip(),
-                    "payment_billing_email": pay_form.get("payment_billing_email", pay_email).strip(),
-                    "payment_billing_line1": pay_form.get("payment_billing_line1", "").strip(),
-                    "payment_billing_city": pay_form.get("payment_billing_city", "").strip(),
-                    "payment_billing_state": pay_form.get("payment_billing_state", "").strip(),
-                    "payment_billing_postal_code": pay_form.get("payment_billing_postal_code", "").strip(),
-                    "payment_billing_country": pay_form.get("payment_country", "US").strip(),
-                }
-            )
-            account = payment_bind_app.load_account(pay_email)
-            binder = payment_bind_app.PaymentBinder(cfg, account)
-            result = binder.run()
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            verification = result.get("verification") if isinstance(result, dict) else {}
-            with STATE.lock:
-                STATE.last_pay_result = result if isinstance(result, dict) else {}
-                STATE.pay_verification = verification if isinstance(verification, dict) else {}
-            if isinstance(verification, dict) and verification.get("required"):
-                _append_output("\n[PAY] 已进入人工验证挂起态，请在前端打开验证链接并手动完成验证。\n")
-            success = not (isinstance(verification, dict) and verification.get("required"))
+        cfg = payment_bind_app.load_config()
+        cfg.update(
+            {
+                "proxy": pay_form.get("proxy", "").strip(),
+                "payment_country": pay_form.get("payment_country", "US").strip(),
+                "payment_card_number": pay_form.get("payment_card_number", "").strip(),
+                "payment_card_exp_month": pay_form.get("payment_card_exp_month", "").strip(),
+                "payment_card_exp_year": pay_form.get("payment_card_exp_year", "").strip(),
+                "payment_card_cvc": pay_form.get("payment_card_cvc", "").strip(),
+                "payment_billing_name": pay_form.get("payment_billing_name", "").strip(),
+                "payment_billing_email": pay_form.get("payment_billing_email", pay_email).strip(),
+                "payment_billing_line1": pay_form.get("payment_billing_line1", "").strip(),
+                "payment_billing_city": pay_form.get("payment_billing_city", "").strip(),
+                "payment_billing_state": pay_form.get("payment_billing_state", "").strip(),
+                "payment_billing_postal_code": pay_form.get("payment_billing_postal_code", "").strip(),
+                "payment_billing_country": pay_form.get("payment_country", "US").strip(),
+            }
+        )
+        account = payment_bind_app.load_account(pay_email)
+        manual_access_token = str(pay_form.get("payment_access_token") or "").strip()
+        if manual_access_token:
+            account = dict(account)
+            account["access_token"] = manual_access_token
+        binder = payment_bind_app.PaymentBinder(cfg, account)
+        checkout = binder.create_checkout()
+        hosted_page_url = str(checkout.get("stripe_hosted_url") or checkout.get("checkout_url") or "").strip()
+        verification = {
+            "required": bool(hosted_page_url),
+            "status": "awaiting_human_verification" if hosted_page_url else "host_page_unavailable",
+            "reason": "stripe_hosted_page",
+            "message": "已生成支付验证链接，请在新页面完成验证，完成后点击“已验证”以重新获取 team token。" if hosted_page_url else "未生成可用的 hosted page 链接。",
+            "verification_url": hosted_page_url,
+            "render_mode": "external_link",
+        }
+        result = {
+            "email": pay_email,
+            "checkout_session_id": checkout.get("checkout_session_id") or "",
+            "checkout": {
+                "checkout_session_id": checkout.get("checkout_session_id") or "",
+                "client_secret": checkout.get("client_secret") or "",
+                "publishable_key": checkout.get("publishable_key") or "",
+                "expected_amount": checkout.get("expected_amount"),
+                "checkout_url": checkout.get("checkout_url") or "",
+                "stripe_hosted_url": checkout.get("stripe_hosted_url") or "",
+            },
+            "confirm": {},
+            "confirm_status": {
+                "checkout_status": "open",
+                "payment_status": "pending_verification",
+                "setup_intent_id": "",
+                "setup_intent_client_secret": "",
+                "setup_intent_status": "",
+                "setup_intent_next_action": "hosted_page",
+                "setup_intent_next_action_url": hosted_page_url,
+                "requires_action": bool(hosted_page_url),
+                "return_url": hosted_page_url,
+                "final_state": "hosted_page_generated" if hosted_page_url else "hosted_page_missing",
+                "final_message": verification["message"],
+                "is_success": False,
+            },
+            "verification": verification,
+        }
+        hosted_page = {
+            "email": pay_email,
+            "checkout_session_id": str(checkout.get("checkout_session_id") or ""),
+            "url": hosted_page_url,
+            "checkout_url": str(checkout.get("checkout_url") or ""),
+            "stripe_hosted_url": str(checkout.get("stripe_hosted_url") or ""),
+            "publishable_key_prefix": str(checkout.get("publishable_key") or "")[:18],
+            "expected_amount": checkout.get("expected_amount"),
+        }
+        with STATE.lock:
+            STATE.last_pay_result = result
+            STATE.pay_verification = verification
+            STATE.pay_hosted_page = hosted_page
+        success = bool(hosted_page_url)
+        if not hosted_page_url:
+            error_text = "未生成可用的 hosted page 链接"
     except Exception as exc:
         error_text = f"{exc}\n{traceback.format_exc()}"
     finally:
@@ -489,6 +539,7 @@ def get_status():
                 "status_version": STATE.status_version,
                 "pay_result": STATE.last_pay_result,
                 "pay_verification": STATE.pay_verification,
+                "pay_hosted_page": STATE.pay_hosted_page,
             }
         )
 
@@ -510,6 +561,7 @@ async def websocket_status(websocket: WebSocket):
             "status_version": STATE.status_version,
             "pay_result": STATE.last_pay_result,
             "pay_verification": STATE.pay_verification,
+            "pay_hosted_page": STATE.pay_hosted_page,
         }
     await websocket.send_text(json.dumps(init_payload, ensure_ascii=False))
     try:
@@ -770,7 +822,7 @@ def stop_register_task():
 def save_pay_config(
     pay_email: str = Form(""),
     proxy: str = Form(""),
-    payment_country: str = Form("US"),
+    payment_access_token: str = Form(""),
     payment_card_number: str = Form(""),
     payment_card_exp_month: str = Form(""),
     payment_card_exp_year: str = Form(""),
@@ -786,6 +838,7 @@ def save_pay_config(
         "pay_email": pay_email,
         "proxy": proxy,
         "payment_country": payment_country,
+        "payment_access_token": payment_access_token,
         "payment_card_number": payment_card_number,
         "payment_card_exp_month": payment_card_exp_month,
         "payment_card_exp_year": payment_card_exp_year,
@@ -798,10 +851,15 @@ def save_pay_config(
         "payment_billing_postal_code": payment_billing_postal_code,
     }
     if not pay_form["pay_email"] and _list_account_options():
-        pay_form["pay_email"] = _list_account_options()[0]["email"]
+        first_account = _list_account_options()[0]
+        pay_form["pay_email"] = first_account["email"]
+        if not str(pay_form.get("payment_access_token") or "").strip():
+            pay_form["payment_access_token"] = str(first_account.get("access_token") or "")
     account = ACCOUNT_STORE.get_account(pay_form["pay_email"]) or {}
     if account:
         pay_form["payment_billing_email"] = str(account.get("email") or pay_form["pay_email"])
+        if not str(pay_form.get("payment_access_token") or "").strip():
+            pay_form["payment_access_token"] = str(account.get("access_token") or "")
     with STATE.lock:
         STATE.last_pay_form.update(pay_form)
         snapshot = dict(STATE.last_pay_form)
@@ -817,7 +875,7 @@ def save_pay_config(
 def start_pay(
     pay_email: str = Form(""),
     proxy: str = Form(""),
-    payment_country: str = Form("US"),
+    payment_access_token: str = Form(""),
     payment_card_number: str = Form(""),
     payment_card_exp_month: str = Form(""),
     payment_card_exp_year: str = Form(""),
@@ -833,6 +891,7 @@ def start_pay(
         "pay_email": pay_email,
         "proxy": proxy,
         "payment_country": payment_country,
+        "payment_access_token": payment_access_token,
         "payment_card_number": payment_card_number,
         "payment_card_exp_month": payment_card_exp_month,
         "payment_card_exp_year": payment_card_exp_year,
@@ -847,6 +906,8 @@ def start_pay(
     account = ACCOUNT_STORE.get_account(pay_email) or {}
     if account:
         pay_form["payment_billing_email"] = str(account.get("email") or pay_email)
+        if not str(pay_form.get("payment_access_token") or "").strip():
+            pay_form["payment_access_token"] = str(account.get("access_token") or "")
 
     with STATE.lock:
         if STATE.running:
@@ -861,6 +922,7 @@ def start_pay(
         STATE.last_success = False
         STATE.last_pay_result = {}
         STATE.pay_verification = {}
+        STATE.pay_hosted_page = {}
         STATE.log_version += 1
         STATE.last_pay_form.update(pay_form)
     _notify_status_update()
@@ -899,21 +961,26 @@ def continue_pay_verification():
             return JSONResponse({"ok": False, "message": "当前没有待处理的人工验证任务"}, status_code=400)
     email = str(result.get("email") or pay_form.get("pay_email") or "").strip()
     if not email:
-        return JSONResponse({"ok": False, "message": "缺少账号邮箱，无法在人工验证后刷新 team token"}, status_code=400)
+        return JSONResponse({"ok": False, "message": "缺少账号邮箱，无法重新获取 team token"}, status_code=400)
     try:
         account = payment_bind_app.load_account(email)
-        access_token = str(account.get("access_token") or "").strip()
-        if not access_token:
-            raise RuntimeError("账号缺少 access_token，无法刷新 team token")
-        auth = AuthClient(proxy=pay_form.get("proxy", "").strip() or None)
-        refreshed = auth.refresh_tokens(access_token)
+        password = str(account.get("password") or "").strip()
+        if not password:
+            raise RuntimeError("账号缺少 password，无法重新执行 OAuth 获取 team token")
+        helper = ncs_register.ChatGPTRegister(proxy=pay_form.get("proxy", "").strip() or None, tag=f"pay-refresh:{email}")
+        refreshed = helper.perform_codex_oauth_login_http(
+            email,
+            password,
+            mail_token=None,
+            provider=ncs_register.MAIL_PROVIDER,
+        )
         if not isinstance(refreshed, dict) or not str(refreshed.get("access_token") or "").strip():
-            raise RuntimeError("refresh_tokens 未返回新的 access_token")
-        merged = dict(account)
-        merged.update(refreshed)
-        ACCOUNT_STORE.upsert_account(merged)
+            raise RuntimeError("重新获取 team token 失败，未返回 access_token")
+        refreshed["password"] = password
+        ncs_register._save_codex_tokens(email, refreshed, register=helper)
+        merged = payment_bind_app.load_account(email)
         verification["status"] = "manual_verification_acknowledged"
-        verification["message"] = "已确认人工验证完成，并已刷新一次 token；若已进 team 计划，当前保存的 access_token 应更新为 team token。"
+        verification["message"] = "已确认人工验证完成，并已重新获取一次 team token。"
         result["verification"] = verification
         result["refreshed_tokens"] = {
             "has_access_token": bool(str(merged.get("access_token") or "").strip()),
@@ -924,16 +991,15 @@ def continue_pay_verification():
         with STATE.lock:
             STATE.pay_verification = verification
             STATE.last_pay_result = result
-            STATE.last_success = False
+            STATE.last_success = True
             STATE.last_error = ""
-        _append_output("\n[PAY] 已收到人工验证完成确认，并已重新刷新一次 token 以获取 team 计划上下文。\n")
         _notify_status_update()
         return JSONResponse({"ok": True, "verification": verification, "pay_result": result})
     except Exception as exc:
         with STATE.lock:
-            STATE.last_error = f"人工验证后刷新 token 失败: {exc}"
+            STATE.last_error = f"人工验证后获取 team token 失败: {exc}"
         _notify_status_update()
-        return JSONResponse({"ok": False, "message": f"人工验证后刷新 token 失败: {exc}"}, status_code=500)
+        return JSONResponse({"ok": False, "message": f"人工验证后获取 team token 失败: {exc}"}, status_code=500)
 
 
 @app.get("/pay/fill-address")

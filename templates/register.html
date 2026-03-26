@@ -186,17 +186,23 @@
         {% elif active_tab == 'pay' %}
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-base font-semibold text-slate-900"><i class="fa fa-credit-card mr-2 text-emerald-500"></i>Pay 参数</h2>
-          <span class="text-[11px] text-slate-400">SQLite 账号 + 精简支付字段</span>
+          <span class="text-[11px] text-slate-400">仅生成 hosted page，用户手动验证后再刷新 team token</span>
         </div>
 
         <form id="payForm" method="post" action="/pay/start" class="space-y-3">
           <div>
             <label class="block text-xs font-medium text-slate-700 mb-1">账号</label>
-            <select name="pay_email" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+            <select id="payEmailSelect" name="pay_email" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
               {% for account in account_options %}
-              <option value="{{ account.email }}" {% if state.last_pay_form.pay_email == account.email %}selected{% endif %}>{{ account.email }}</option>
+              <option value="{{ account.email }}" data-access-token="{{ account.access_token }}" {% if state.last_pay_form.pay_email == account.email %}selected{% endif %}>{{ account.email }}</option>
               {% endfor %}
             </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-700 mb-1">Access Token</label>
+            <textarea id="payAccessTokenInput" name="payment_access_token" rows="4" placeholder="可直接粘贴 access_token；留空时默认使用当前账号已保存的 access_token" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs bg-white font-mono">{{ state.last_pay_form.payment_access_token }}</textarea>
+            <p class="mt-1 text-[11px] text-slate-500">支持账号预填，也支持手动覆盖输入。</p>
           </div>
 
           <div>
@@ -276,19 +282,37 @@
               <i class="fa fa-random mr-2"></i>自动地址
             </button>
             <button type="button" data-submit-action="/pay/start" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2.5 transition disabled:opacity-60" {% if state.running and state.current_task == 'pay' %}disabled{% endif %}>
-              <i class="fa fa-credit-card mr-2"></i>{% if state.running and state.current_task == 'pay' %}Pay 任务执行中{% else %}启动 Pay{% endif %}
+              <i class="fa fa-link mr-2"></i>{% if state.running and state.current_task == 'pay' %}生成中{% else %}生成验证链接{% endif %}
             </button>
-            {% if state.running and state.current_task == 'pay' %}
-            <button type="button" data-submit-action="/pay/stop" class="inline-flex items-center justify-center rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium text-sm px-4 py-2.5 transition">
-              <i class="fa fa-stop mr-2"></i>停止支付
+            <button type="button" id="continueVerificationBtn" class="inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium text-sm px-4 py-2.5 transition disabled:opacity-50" {% if not state.pay_verification.required or state.pay_verification.status == 'manual_verification_acknowledged' %}disabled{% endif %}>
+              <i class="fa fa-check mr-2"></i>已验证，刷新 Team Token
             </button>
-            {% else %}
-            <button type="button" data-submit-action="/pay/save" class="inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium text-sm px-4 py-2.5 transition">
-              <i class="fa fa-floppy-o mr-2"></i>保存当前表单
-            </button>
-            {% endif %}
           </div>
         </form>
+
+        <div id="payHostedPagePanel" class="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 {% if not state.pay_hosted_page.url %}hidden{% endif %}">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h3 class="text-sm font-semibold text-emerald-800"><i class="fa fa-external-link mr-2"></i>Hosted Page 已生成</h3>
+              <p class="mt-1 text-xs text-emerald-700" id="payHostedPageMessage">请打开下面链接完成支付验证，完成后点击“已验证，刷新 Team Token”。</p>
+            </div>
+            <span class="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-800">PAY</span>
+          </div>
+          <div class="mt-3 space-y-2 text-xs text-slate-700">
+            <div>账号：<span id="payHostedPageEmail" class="font-semibold">{{ state.pay_hosted_page.email or '-' }}</span></div>
+            <div>会话：<span id="payHostedPageSession" class="font-mono break-all">{{ state.pay_hosted_page.checkout_session_id or '-' }}</span></div>
+            <div>金额：<span id="payHostedPageAmount" class="font-semibold">{{ state.pay_hosted_page.expected_amount if state.pay_hosted_page.expected_amount is not none else '-' }}</span></div>
+          </div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <a id="payHostedPageLink" href="{{ state.pay_hosted_page.url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center justify-center rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm px-4 py-2 transition {% if not state.pay_hosted_page.url %}pointer-events-none opacity-50{% endif %}">
+              <i class="fa fa-external-link mr-2"></i>打开 Hosted Page
+            </a>
+            <button type="button" id="copyHostedPageBtn" class="inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-white hover:bg-emerald-100 text-emerald-800 font-medium text-sm px-4 py-2 transition">
+              <i class="fa fa-copy mr-2"></i>复制链接
+            </button>
+          </div>
+          <div class="mt-3 rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-600 break-all" id="payHostedPageUrlText">{{ state.pay_hosted_page.url or '尚未生成链接' }}</div>
+        </div>
         {% else %}
         <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3 mb-4">
           <div>
@@ -362,60 +386,26 @@
         <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
           <div class="flex items-center justify-between mb-3 gap-4">
             <div class="flex items-center gap-3 min-w-0">
-              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-terminal mr-2 text-slate-600"></i>运行日志</h2>
+              <h2 class="text-base font-semibold text-slate-900 whitespace-nowrap"><i class="fa fa-signal mr-2 text-slate-600"></i>任务状态</h2>
               <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-600 px-3 py-1 text-xs font-medium whitespace-nowrap" data-status-badge>
                 <i class="fa fa-pause mr-2"></i>空闲
               </span>
             </div>
-            <label class="inline-flex items-center gap-2 text-[11px] text-slate-500 whitespace-nowrap select-none cursor-pointer">
-              <input type="checkbox" id="autoScrollToggle" class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" checked />
-              <span>自动滚动日志</span>
-            </label>
           </div>
-          <div id="payVerificationPanel" class="hidden mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-slate-800">
+          <div id="payVerificationPanel" class="hidden rounded-2xl border border-amber-200 bg-amber-50 p-4 text-slate-800">
             <div class="flex items-start justify-between gap-3">
               <div>
-                <h3 class="text-sm font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>检测到人工验证</h3>
-                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">系统会直接在当前页面弹窗内嵌显示 hCaptcha 验证组件。</p>
+                <h3 class="text-sm font-semibold text-amber-800"><i class="fa fa-shield mr-2"></i>人工验证提醒</h3>
+                <p class="mt-1 text-xs text-amber-700" id="payVerificationMessage">请打开 hosted page 完成验证，然后点击“已验证，刷新 Team Token”。</p>
                 <div class="mt-2 text-[11px] text-amber-800 space-y-1">
                   <div>状态：<span id="payVerificationStatus" class="font-semibold">-</span></div>
                   <div>原因：<span id="payVerificationReason" class="font-semibold">-</span></div>
                   <div>渲染模式：<span id="payVerificationRenderMode" class="font-semibold">-</span></div>
-                  <div>Sitekey：<span id="payVerificationSitekey" class="font-semibold break-all">-</span></div>
+                  <div>链接：<span id="payVerificationSitekey" class="font-semibold break-all">-</span></div>
                 </div>
               </div>
               <span class="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-800">PAY</span>
             </div>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button type="button" id="openVerificationBtn" class="inline-flex items-center justify-center rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-medium text-sm px-4 py-2 transition">
-                <i class="fa fa-window-maximize mr-2"></i>重新打开验证码弹窗
-              </button>
-              <button type="button" id="continueVerificationBtn" class="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-800 font-medium text-sm px-4 py-2 transition">
-                <i class="fa fa-check mr-2"></i>我已完成验证
-              </button>
-            </div>
-          </div>
-
-          <dialog id="stripeVerificationDialog" class="rounded-2xl border border-emerald-200 shadow-xl w-[min(760px,94vw)] p-0 backdrop:bg-slate-900/50">
-            <div class="bg-white rounded-2xl p-4">
-              <div class="flex items-center justify-between mb-3">
-                <div>
-                  <h3 class="text-base font-semibold text-emerald-800"><i class="fa fa-credit-card mr-2"></i>Stripe 验证</h3>
-                  <p class="mt-1 text-xs text-slate-500">使用 Stripe 官方 SDK 在当前页面弹窗内完成验证，不再跳转其他页面。</p>
-                </div>
-                <button type="button" id="closeStripeDialogBtn" class="text-slate-400 hover:text-slate-600"><i class="fa fa-times"></i></button>
-              </div>
-              <div class="rounded-xl border border-slate-200 bg-slate-50 p-4 min-h-[220px]">
-                <div id="stripeVerificationContainer" class="min-h-[120px] flex items-center justify-center text-sm text-slate-500">等待调用 Stripe 官方验证流程…</div>
-                <div id="stripeVerificationMeta" class="mt-3 text-[11px] text-slate-500 break-all"></div>
-              </div>
-              <div class="mt-4 flex justify-end gap-2">
-                <button type="button" id="closeStripeDialogFooterBtn" class="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-sm px-4 py-2">关闭</button>
-              </div>
-            </div>
-          </dialog>
-          <div class="rounded-xl bg-slate-950 text-slate-100 p-4 min-h-[620px] max-h-[75vh] overflow-auto" id="logViewport">
-            <pre class="whitespace-pre-wrap text-xs leading-5" data-log-container>{{ state.last_output if state.last_output else '暂无日志输出，启动任务后会在这里显示。' }}</pre>
           </div>
         </div>
       </div>
@@ -426,47 +416,15 @@
   <script>
     const activeTab = '{{ active_tab }}';
     const statusBadge = document.querySelector('[data-status-badge]');
-    const logContainer = document.querySelector('[data-log-container]');
-    const logViewport = document.getElementById('logViewport');
-    const autoScrollToggle = document.getElementById('autoScrollToggle');
-    const autoScrollStorageKey = 'registerPanelAutoScroll';
     let lastErrorText = '';
     const dismissedErrorStorageKey = 'registerPanelDismissedError';
     let ws = null;
     let wsReconnectTimer = null;
     let statusPollTimer = null;
-    let latestLogVersion = 0;
     let latestStatusVersion = 0;
     let latestPayVerification = null;
     let latestPayResult = null;
-    let autoOpenedVerificationKey = '';
-
-    function isAutoScrollEnabled() {
-      return !!autoScrollToggle?.checked;
-    }
-
-    function syncAutoScrollPreference() {
-      if (!autoScrollToggle) return;
-      const saved = window.localStorage.getItem(autoScrollStorageKey);
-      if (saved === 'false') {
-        autoScrollToggle.checked = false;
-      } else if (saved === 'true') {
-        autoScrollToggle.checked = true;
-      }
-      autoScrollToggle.addEventListener('change', () => {
-        window.localStorage.setItem(autoScrollStorageKey, autoScrollToggle.checked ? 'true' : 'false');
-        if (autoScrollToggle.checked && logViewport) {
-          logViewport.scrollTop = logViewport.scrollHeight;
-        }
-      });
-    }
-
-    function scrollLogToBottom(force = false) {
-      if (!logViewport) return;
-      if (force || isAutoScrollEnabled()) {
-        logViewport.scrollTop = logViewport.scrollHeight;
-      }
-    }
+    let latestPayHostedPage = null;
 
     function ensureErrorDialog() {
       let dialog = document.getElementById('errorDialog');
@@ -520,58 +478,26 @@
       }
     }
 
-    function showDialogSafe(dialog) {
-      if (!dialog) return false;
-      try {
-        if (typeof dialog.showModal === 'function') {
-          if (!dialog.open) dialog.showModal();
-        } else {
-          dialog.setAttribute('open', 'open');
-          dialog.style.display = 'block';
-        }
-        return true;
-      } catch (error) {
-        dialog.setAttribute('open', 'open');
-        dialog.style.display = 'block';
-        dialog.classList.remove('hidden');
-        return false;
+    function updatePayHostedPagePanel(hostedPage) {
+      const panel = document.getElementById('payHostedPagePanel');
+      const emailEl = document.getElementById('payHostedPageEmail');
+      const sessionEl = document.getElementById('payHostedPageSession');
+      const amountEl = document.getElementById('payHostedPageAmount');
+      const linkEl = document.getElementById('payHostedPageLink');
+      const urlTextEl = document.getElementById('payHostedPageUrlText');
+      latestPayHostedPage = hostedPage && typeof hostedPage === 'object' ? hostedPage : null;
+      if (!panel) return;
+      const url = (latestPayHostedPage?.url || '').trim();
+      panel.classList.toggle('hidden', !url);
+      if (emailEl) emailEl.textContent = latestPayHostedPage?.email || '-';
+      if (sessionEl) sessionEl.textContent = latestPayHostedPage?.checkout_session_id || '-';
+      if (amountEl) amountEl.textContent = latestPayHostedPage?.expected_amount ?? '-';
+      if (linkEl) {
+        linkEl.href = url || '#';
+        linkEl.classList.toggle('pointer-events-none', !url);
+        linkEl.classList.toggle('opacity-50', !url);
       }
-    }
-
-    async function openStripeVerificationDialog() {
-      const dialog = document.getElementById('stripeVerificationDialog');
-      const container = document.getElementById('stripeVerificationContainer');
-      const meta = document.getElementById('stripeVerificationMeta');
-      const publishableKey = (latestPayResult?.checkout?.publishable_key || '').trim();
-      const clientSecret = (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim();
-      if (!dialog || !container) {
-        showErrorDialog('未找到 Stripe 验证弹窗节点，无法显示验证窗口。');
-        return;
-      }
-      container.textContent = '正在调用 Stripe 官方验证流程，请稍候…';
-      meta.textContent = `pk=${publishableKey ? `${publishableKey.slice(0, 18)}...` : '-'} | client_secret=${clientSecret ? `${clientSecret.slice(0, 24)}...` : '-'}`;
-      showDialogSafe(dialog);
-      if (!publishableKey || !clientSecret) {
-        container.textContent = '缺少 Stripe 验证所需的 publishable_key 或 client_secret，无法在当前页面内嵌验证。';
-        return;
-      }
-      try {
-        const stripe = window.Stripe?.(publishableKey);
-        if (!stripe) {
-          container.textContent = 'Stripe SDK 初始化失败。';
-          showErrorDialog('Stripe SDK 初始化失败，window.Stripe 不可用。');
-          return;
-        }
-        const result = await stripe.confirmCardSetup(clientSecret);
-        if (result?.error) {
-          container.textContent = `Stripe 验证未完成: ${result.error.message || 'unknown error'}`;
-          return;
-        }
-        container.textContent = 'Stripe 验证成功，已完成当前弹窗内验证。请点击“我已完成验证”继续后处理。';
-      } catch (error) {
-        container.textContent = `Stripe 验证执行失败: ${error?.message || error}`;
-        showErrorDialog(`Stripe 验证执行失败: ${error?.message || error}`);
-      }
+      if (urlTextEl) urlTextEl.textContent = url || '尚未生成链接';
     }
 
     function updatePayVerificationPanel(verification) {
@@ -581,32 +507,18 @@
       const reasonEl = document.getElementById('payVerificationReason');
       const renderModeEl = document.getElementById('payVerificationRenderMode');
       const sitekeyEl = document.getElementById('payVerificationSitekey');
-      const openBtn = document.getElementById('openVerificationBtn');
       const continueBtn = document.getElementById('continueVerificationBtn');
       latestPayVerification = verification && typeof verification === 'object' ? verification : null;
       if (!panel) return;
       const required = !!latestPayVerification?.required;
       panel.classList.toggle('hidden', !required);
       if (!required) return;
-      const hcaptcha = latestPayVerification?.hcaptcha || {};
-      const hasStripeSdkContext = !!((latestPayResult?.checkout?.publishable_key || '').trim() && (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim());
-      const renderMode = hasStripeSdkContext ? 'stripe_sdk_dialog' : (latestPayVerification?.render_mode || 'external_link');
-      if (messageEl) {
-        messageEl.textContent = hasStripeSdkContext
-          ? '系统将使用 Stripe 官方 SDK 在当前页面弹窗内完成验证，不再打开其他页面。'
-          : '当前缺少 Stripe SDK 所需上下文，且不能打开其他页面，因为外部页面没有认证数据。';
-      }
+      if (messageEl) messageEl.textContent = latestPayVerification.message || '请完成 hosted page 验证后再刷新 Team Token。';
       if (statusEl) statusEl.textContent = latestPayVerification.status || '-';
       if (reasonEl) reasonEl.textContent = latestPayVerification.reason || '-';
-      if (renderModeEl) renderModeEl.textContent = renderMode;
-      if (sitekeyEl) sitekeyEl.textContent = hcaptcha.sitekey || '-';
-      if (openBtn) openBtn.disabled = !hasStripeSdkContext;
-      if (continueBtn) continueBtn.disabled = latestPayVerification.status === 'manual_verification_acknowledged';
-      const verificationKey = `${latestPayVerification.status || ''}|${latestPayResult?.confirm_status?.setup_intent_client_secret || ''}|${latestPayVerification.reason || ''}`;
-      if (hasStripeSdkContext && latestPayVerification.status === 'awaiting_human_verification' && verificationKey && verificationKey !== autoOpenedVerificationKey) {
-        autoOpenedVerificationKey = verificationKey;
-        requestAnimationFrame(() => openStripeVerificationDialog());
-      }
+      if (renderModeEl) renderModeEl.textContent = latestPayVerification.render_mode || 'external_link';
+      if (sitekeyEl) sitekeyEl.textContent = latestPayVerification.verification_url || '-';
+      if (continueBtn) continueBtn.disabled = !required || latestPayVerification.status === 'manual_verification_acknowledged';
     }
 
     function handleStatusMessage(data) {
@@ -623,25 +535,7 @@
       }
       updateStatusBadge(data);
       updatePayVerificationPanel(data.pay_verification || null);
-    }
-
-    function appendLogChunk(chunk, version = null) {
-      if (!logContainer || !chunk) return;
-      const current = logContainer.textContent === '暂无日志输出，启动任务后会在这里显示。' ? '' : logContainer.textContent;
-      logContainer.textContent = current + chunk;
-      if (typeof version === 'number') {
-        latestLogVersion = Math.max(latestLogVersion, version);
-      }
-      requestAnimationFrame(() => scrollLogToBottom());
-    }
-
-    function setFullLog(text, version = null) {
-      if (!logContainer) return;
-      logContainer.textContent = text || '暂无日志输出，启动任务后会在这里显示。';
-      if (typeof version === 'number') {
-        latestLogVersion = Math.max(latestLogVersion, version);
-      }
-      requestAnimationFrame(() => scrollLogToBottom(true));
+      updatePayHostedPagePanel(data.pay_hosted_page || null);
     }
 
     async function pollStatusFallback() {
@@ -656,9 +550,6 @@
         });
         if (!res.ok) return;
         const data = await res.json();
-        if (typeof data.log_version === 'number' && data.log_version > latestLogVersion) {
-          setFullLog(data.last_output || '', data.log_version);
-        }
         if (typeof data.status_version === 'number' && data.status_version >= latestStatusVersion) {
           latestStatusVersion = data.status_version;
           handleStatusMessage(data);
@@ -674,23 +565,18 @@
     }
 
     function connectWebSocket() {
-      if (!logContainer) return;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'init') {
-            setFullLog(data.last_output || '', typeof data.log_version === 'number' ? data.log_version : null);
             if (typeof data.status_version === 'number') {
               latestStatusVersion = Math.max(latestStatusVersion, data.status_version);
             }
             latestPayResult = data.pay_result || null;
+            latestPayHostedPage = data.pay_hosted_page || null;
             handleStatusMessage(data);
-            return;
-          }
-          if (data.type === 'log') {
-            appendLogChunk(data.chunk || '', typeof data.log_version === 'number' ? data.log_version : null);
             return;
           }
           if (data.type === 'status') {
@@ -698,6 +584,7 @@
               latestStatusVersion = Math.max(latestStatusVersion, data.status_version);
             }
             latestPayResult = data.pay_result || latestPayResult;
+            latestPayHostedPage = data.pay_hosted_page || latestPayHostedPage;
             handleStatusMessage(data);
           }
         } catch (error) {
@@ -722,8 +609,6 @@
       };
     }
 
-    syncAutoScrollPreference();
-    scrollLogToBottom(true);
     connectWebSocket();
     ensureStatusPolling();
     pollStatusFallback();
@@ -863,11 +748,27 @@
     if (activeTab === 'pay') {
       const fillBtn = document.getElementById('fillAddressBtn');
       const payForm = document.getElementById('payForm');
-      const openVerificationBtn = document.getElementById('openVerificationBtn');
+      const payEmailSelect = document.getElementById('payEmailSelect');
+      const payAccessTokenInput = document.getElementById('payAccessTokenInput');
       const continueVerificationBtn = document.getElementById('continueVerificationBtn');
-      const stripeVerificationDialog = document.getElementById('stripeVerificationDialog');
-      const closeStripeDialogBtn = document.getElementById('closeStripeDialogBtn');
-      const closeStripeDialogFooterBtn = document.getElementById('closeStripeDialogFooterBtn');
+      const copyHostedPageBtn = document.getElementById('copyHostedPageBtn');
+
+      function maybePrefillAccessToken() {
+        if (!payEmailSelect || !payAccessTokenInput) return;
+        if ((payAccessTokenInput.value || '').trim()) return;
+        const selectedOption = payEmailSelect.options[payEmailSelect.selectedIndex];
+        const token = selectedOption?.dataset?.accessToken || '';
+        payAccessTokenInput.value = token;
+      }
+
+      payEmailSelect?.addEventListener('change', () => {
+        if (!payAccessTokenInput) return;
+        payAccessTokenInput.value = '';
+        maybePrefillAccessToken();
+      });
+
+      maybePrefillAccessToken();
+
       fillBtn?.addEventListener('click', async () => {
         try {
           const paymentCountry = (payForm.querySelector('[name="payment_country"]')?.value || 'US').trim() || 'US';
@@ -894,32 +795,16 @@
           showErrorDialog(`自动地址填充失败: ${e?.message || e}`);
         }
       });
-      openVerificationBtn?.addEventListener('click', () => {
-        if (!latestPayVerification) {
-          showErrorDialog('当前没有可用的验证码信息');
+      copyHostedPageBtn?.addEventListener('click', async () => {
+        const url = (latestPayHostedPage?.url || '').trim();
+        if (!url) {
+          showErrorDialog('当前没有可复制的 Hosted Page 链接');
           return;
         }
-        const hasStripeSdkContext = !!((latestPayResult?.checkout?.publishable_key || '').trim() && (latestPayResult?.confirm_status?.setup_intent_client_secret || '').trim());
-        if (!hasStripeSdkContext) {
-          showErrorDialog('当前缺少 Stripe SDK 所需上下文，不能再打开其他页面，因为外部页面没有认证数据。');
-          return;
-        }
-        openStripeVerificationDialog();
-      });
-      closeStripeDialogBtn?.addEventListener('click', () => {
-        if (typeof stripeVerificationDialog?.close === 'function') {
-          stripeVerificationDialog.close();
-        } else if (stripeVerificationDialog) {
-          stripeVerificationDialog.removeAttribute('open');
-          stripeVerificationDialog.style.display = 'none';
-        }
-      });
-      closeStripeDialogFooterBtn?.addEventListener('click', () => {
-        if (typeof stripeVerificationDialog?.close === 'function') {
-          stripeVerificationDialog.close();
-        } else if (stripeVerificationDialog) {
-          stripeVerificationDialog.removeAttribute('open');
-          stripeVerificationDialog.style.display = 'none';
+        try {
+          await navigator.clipboard.writeText(url);
+        } catch (e) {
+          showErrorDialog(`复制链接失败: ${e?.message || e}`);
         }
       });
       continueVerificationBtn?.addEventListener('click', async () => {
@@ -934,6 +819,7 @@
           if (!res.ok || !data?.ok) {
             throw new Error(data?.message || `HTTP ${res.status}`);
           }
+          latestPayResult = data.pay_result || latestPayResult;
           updatePayVerificationPanel(data.verification || null);
         } catch (e) {
           showErrorDialog(`人工验证确认失败: ${e?.message || e}`);
