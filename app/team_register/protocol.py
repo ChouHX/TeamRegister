@@ -50,7 +50,7 @@ import base64
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, parse_qs, urlencode, quote
+from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -97,7 +97,49 @@ _config = load_config()
 TOTAL_ACCOUNTS = _config.get("total_accounts", 30)
 CONCURRENT_WORKERS = _config.get("concurrent_workers", 1)  # 并发数（默认串行）
 HEADLESS = _config.get("headless", False)  # 是否无头模式运行浏览器
-PROXY = _config.get("proxy", "")
+def _normalize_proxy_url(value):
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+
+    lowered = proxy.lower()
+    if lowered in {"direct", "none", "off", "false", "0", "default"}:
+        return proxy
+
+    try:
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy
+
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return proxy
+
+        auth = ""
+        if parsed.username is not None:
+            auth = quote(unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += f":{quote(unquote(parsed.password), safe='')}"
+            auth += "@"
+
+        host = hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse((
+            parsed.scheme.lower(),
+            f"{auth}{host}{port}",
+            parsed.path or "",
+            parsed.params or "",
+            parsed.query or "",
+            parsed.fragment or "",
+        ))
+    except Exception:
+        return proxy
+
+
+PROXY = _normalize_proxy_url(_config.get("proxy", ""))
 
 # 邮箱配置
 CF_WORKER_DOMAIN = _config.get("cf_worker_domain", "email.tuxixilax.cfd")
@@ -152,7 +194,7 @@ def create_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-    if PROXY:
+    if PROXY and PROXY.lower() not in {"direct", "none", "off", "false", "0", "default"}:
         session.proxies = {"http": PROXY, "https": PROXY}
     return session
 
@@ -2223,7 +2265,7 @@ def perform_codex_oauth_login(email, password, registrar_session=None):
         options.add_argument(f"--user-agent={USER_AGENT}")
         if HEADLESS:
             options.add_argument("--headless=new")
-        if PROXY:
+        if PROXY and PROXY.lower() not in {"direct", "none", "off", "false", "0", "default"}:
             options.add_argument(f"--proxy-server={PROXY}")
 
         driver = uc.Chrome(version_main=145, options=options, use_subprocess=True)

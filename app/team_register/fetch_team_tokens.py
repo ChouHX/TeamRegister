@@ -24,7 +24,7 @@ import hashlib
 import base64
 import threading
 from datetime import datetime, timezone
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote, urlunparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -38,7 +38,49 @@ _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.
 with open(_CONFIG_FILE, encoding="utf-8") as _f:
     _cfg = json.load(_f)
 
-PROXY            = _cfg.get("proxy", "")
+def _normalize_proxy_url(value):
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+
+    lowered = proxy.lower()
+    if lowered in {"direct", "none", "off", "false", "0", "default"}:
+        return proxy
+
+    try:
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy
+
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return proxy
+
+        auth = ""
+        if parsed.username is not None:
+            auth = quote(unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += f":{quote(unquote(parsed.password), safe='')}"
+            auth += "@"
+
+        host = hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse((
+            parsed.scheme.lower(),
+            f"{auth}{host}{port}",
+            parsed.path or "",
+            parsed.params or "",
+            parsed.query or "",
+            parsed.fragment or "",
+        ))
+    except Exception:
+        return proxy
+
+
+PROXY            = _normalize_proxy_url(_cfg.get("proxy", ""))
 OAUTH_ISSUER     = _cfg.get("oauth_issuer", "https://auth.openai.com")
 OAUTH_CLIENT_ID  = _cfg.get("oauth_client_id", "")
 OAUTH_REDIRECT_URI = _cfg.get("oauth_redirect_uri", "http://localhost:1455/auth/callback")
@@ -92,7 +134,7 @@ def create_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-    if PROXY:
+    if PROXY and PROXY.lower() not in {"direct", "none", "off", "false", "0", "default"}:
         session.proxies = {"http": PROXY, "https": PROXY}
     return session
 

@@ -11,6 +11,7 @@ import sys
 import json
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse, quote, unquote, urlunparse
 
 
 # ================= 配置 =================
@@ -76,9 +77,63 @@ def _cpa_api_call_url(auth_files_url: str) -> str:
     return auth_files_url.replace("/auth-files", "/api-call")
 
 
+
+def _normalize_proxy_url(value) -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+
+    lowered = proxy.lower()
+    if lowered in {"direct", "none", "off", "false", "0", "default"}:
+        return proxy
+
+    try:
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy
+
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return proxy
+
+        auth = ""
+        if parsed.username is not None:
+            auth = quote(unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += f":{quote(unquote(parsed.password), safe='')}"
+            auth += "@"
+
+        host = hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse((
+            parsed.scheme.lower(),
+            f"{auth}{host}{port}",
+            parsed.path or "",
+            parsed.params or "",
+            parsed.query or "",
+            parsed.fragment or "",
+        ))
+    except Exception:
+        return proxy
+
+
+
+def _build_proxy_mapping(value):
+    proxy = _normalize_proxy_url(value)
+    if not proxy:
+        return None
+    if proxy.lower() in {"direct", "none", "off", "false", "0", "default"}:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
+
 def _resolve_cpa_proxy_candidates(cfg: dict) -> list:
     raw = str(cfg.get("upload_api_proxy", "") or "").strip()
-    default_proxy = str(cfg.get("proxy", "") or "").strip()
+    default_proxy = _normalize_proxy_url(cfg.get("proxy", ""))
 
     if raw:
         lowered = raw.lower()
@@ -86,7 +141,7 @@ def _resolve_cpa_proxy_candidates(cfg: dict) -> list:
             return [None]
         if lowered == "default":
             return [default_proxy or None, None]
-        return [raw]
+        return [_normalize_proxy_url(raw) or raw]
 
     if default_proxy:
         return [default_proxy, None]
@@ -109,8 +164,9 @@ def _cpa_request_with_fallback(method: str, url: str, *, cfg: dict, **kwargs):
         session = None
         try:
             session = curl_requests.Session()
-            if proxy:
-                session.proxies = {"http": proxy, "https": proxy}
+            proxy_map = _build_proxy_mapping(proxy)
+            if proxy_map:
+                session.proxies = proxy_map
             return session.request(method, url, **kwargs)
         except Exception as e:
             last_exception = e

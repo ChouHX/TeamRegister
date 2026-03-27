@@ -18,6 +18,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse, quote, unquote, urlunparse
 
 from curl_cffi import requests as curl_requests
 
@@ -61,6 +62,59 @@ PAYMENT_HOSTED_REQUIRED_FIELDS = (
 )
 
 
+def _normalize_proxy_url(value: Any) -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+
+    lowered = proxy.lower()
+    if lowered in {"direct", "none", "off", "false", "0", "default"}:
+        return proxy
+
+    try:
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy
+
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return proxy
+
+        auth = ""
+        if parsed.username is not None:
+            auth = quote(unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += f":{quote(unquote(parsed.password), safe='')}"
+            auth += "@"
+
+        host = hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse((
+            parsed.scheme.lower(),
+            f"{auth}{host}{port}",
+            parsed.path or "",
+            parsed.params or "",
+            parsed.query or "",
+            parsed.fragment or "",
+        ))
+    except Exception:
+        return proxy
+
+
+
+def _build_proxy_mapping(value: Any) -> dict[str, str] | None:
+    proxy = _normalize_proxy_url(value)
+    if not proxy:
+        return None
+    if proxy.lower() in {"direct", "none", "off", "false", "0", "default"}:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
+
 def load_config() -> dict[str, Any]:
     defaults = {
         "proxy": "http://127.0.0.1:7890",
@@ -90,6 +144,7 @@ def load_config() -> dict[str, Any]:
             data = json.load(f)
             if isinstance(data, dict):
                 defaults.update(data)
+    defaults["proxy"] = _normalize_proxy_url(defaults.get("proxy"))
     return defaults
 
 
@@ -253,10 +308,11 @@ class PaymentBinder:
         )
         self.session = curl_requests.Session(impersonate="chrome136")
         self.stripe_session = curl_requests.Session(impersonate="chrome136")
-        self.proxy = str(config.get("proxy") or "").strip()
-        if self.proxy:
-            self.session.proxies = {"http": self.proxy, "https": self.proxy}
-            self.stripe_session.proxies = {"http": self.proxy, "https": self.proxy}
+        self.proxy = _normalize_proxy_url(config.get("proxy"))
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            self.session.proxies = proxy_map
+            self.stripe_session.proxies = proxy_map
 
         self.device_id = str(account.get("device_id") or account.get("oai_device_id") or uuid.uuid4())
         self.ua = str(
@@ -337,8 +393,9 @@ class PaymentBinder:
 
     def _fresh_recovery_session(self):
         recovery = curl_requests.Session(impersonate="chrome136")
-        if self.proxy:
-            recovery.proxies = {"http": self.proxy, "https": self.proxy}
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            recovery.proxies = proxy_map
         carry_cookie_names = {
             "cf_clearance", "__cf_bm", "_cf_uvid", "_cfuvid", "__cflb",
             "oai-did", "__Secure-next-auth.session-token", "__Host-next-auth.csrf-token",

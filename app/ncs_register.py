@@ -22,7 +22,7 @@ import secrets
 import hashlib
 import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote, unquote, urlunparse
 from dataclasses import dataclass
 from email.header import decode_header
 from typing import Any, Dict, Optional
@@ -125,6 +125,57 @@ def _as_csv_list(value: Any) -> list[str]:
     return [str(item).strip() for item in items if str(item).strip()]
 
 
+def _normalize_proxy_url(value: Any) -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+
+    lowered = proxy.lower()
+    if lowered in {"direct", "none", "off", "false", "0", "default"}:
+        return proxy
+
+    try:
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy
+
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return proxy
+
+        auth = ""
+        if parsed.username is not None:
+            auth = quote(unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += f":{quote(unquote(parsed.password), safe='')}"
+            auth += "@"
+
+        host = hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+
+        port = f":{parsed.port}" if parsed.port else ""
+        return urlunparse((
+            parsed.scheme.lower(),
+            f"{auth}{host}{port}",
+            parsed.path or "",
+            parsed.params or "",
+            parsed.query or "",
+            parsed.fragment or "",
+        ))
+    except Exception:
+        return proxy
+
+
+def _build_proxy_mapping(value: Any) -> Optional[Dict[str, str]]:
+    proxy = _normalize_proxy_url(value)
+    if not proxy:
+        return None
+    if proxy.lower() in {"direct", "none", "off", "false", "0", "default"}:
+        return None
+    return {"http": proxy, "https": proxy}
+
+
 def _normalize_outlookmail_fetch_mode(value: Any) -> str:
     mode = str(value or "auto").strip().lower()
     return mode if mode in {"auto", "graph", "imap"} else "auto"
@@ -140,7 +191,7 @@ LAMAIL_API_KEY = str(_CONFIG.get("lamail_api_key", "") or "").strip()
 LAMAIL_DOMAINS = _as_csv_list(_CONFIG.get("lamail_domain", ""))
 LAMAIL_DOMAIN_TEXT = ", ".join(LAMAIL_DOMAINS)
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
-DEFAULT_PROXY = _CONFIG["proxy"]
+DEFAULT_PROXY = _normalize_proxy_url(_CONFIG["proxy"])
 DEFAULT_OUTPUT_FILE = _CONFIG["output_file"]
 ENABLE_OAUTH = _as_bool(_CONFIG.get("enable_oauth", True))
 OAUTH_REQUIRED = _as_bool(_CONFIG.get("oauth_required", True))
@@ -1090,10 +1141,10 @@ def _upload_token_json(filepath):
             if lowered in {"direct", "none", "off", "false", "0"}:
                 return [None]
             if lowered == "default":
-                return [DEFAULT_PROXY or None, None]
-            return [raw]
+                return [_normalize_proxy_url(DEFAULT_PROXY) or None, None]
+            return [_normalize_proxy_url(raw) or raw]
         if DEFAULT_PROXY:
-            return [DEFAULT_PROXY, None]
+            return [_normalize_proxy_url(DEFAULT_PROXY) or None, None]
         return [None]
 
     base_api = _normalize_management_api_root(UPLOAD_API_URL)
@@ -1119,8 +1170,9 @@ def _upload_token_json(filepath):
             mp.addpart(name="file", content_type="application/json",
                        filename=filename, local_path=filepath)
             session = curl_requests.Session()
-            if proxy:
-                session.proxies = {"http": proxy, "https": proxy}
+            proxy_map = _build_proxy_mapping(proxy)
+            if proxy_map:
+                session.proxies = proxy_map
 
             resp = session.post(
                 upload_endpoint,
@@ -1689,8 +1741,9 @@ def _quick_preflight(proxy: str = None, provider: str = "outlookmail") -> bool:
     """启动前连通性检查，避免跑到中途才发现被拦截。"""
     print("\n[Preflight] 开始连通性检查...")
     sess = curl_requests.Session(impersonate="chrome131")
-    if proxy:
-        sess.proxies = {"http": proxy, "https": proxy}
+    proxy_map = _build_proxy_mapping(proxy)
+    if proxy_map:
+        sess.proxies = proxy_map
 
     checks = []
 
@@ -1775,9 +1828,10 @@ class ChatGPTRegister:
         self.impersonate, self.chrome_major, self.chrome_full, self.ua, self.sec_ch_ua = _random_chrome_version()
 
         self.session = curl_requests.Session(impersonate=self.impersonate)
-        self.proxy = proxy
-        if self.proxy:
-            self.session.proxies = {"http": self.proxy, "https": self.proxy}
+        self.proxy = _normalize_proxy_url(proxy)
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            self.session.proxies = proxy_map
 
         self.session.headers.update({
             "User-Agent": self.ua,
@@ -1824,8 +1878,9 @@ class ChatGPTRegister:
 
     def _clone_session(self, source_session):
         cloned = curl_requests.Session(impersonate=self.impersonate)
-        if self.proxy:
-            cloned.proxies = {"http": self.proxy, "https": self.proxy}
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            cloned.proxies = proxy_map
         try:
             cloned.headers.update(dict(getattr(source_session, "headers", {}) or {}))
         except Exception:
@@ -1887,7 +1942,7 @@ class ChatGPTRegister:
     # ==================== OutlookMail ====================
 
     def _outlookmail_proxies(self):
-        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        return _build_proxy_mapping(self.proxy)
 
     def create_outlookmail_email(self):
         """从 Outlook 邮箱池中选择一个账号，返回 (email, password_placeholder, mail_token)"""
@@ -2133,7 +2188,7 @@ class ChatGPTRegister:
     def create_lamail_email(self):
         """创建 LaMail 临时邮箱，返回 (email, password, mail_token)"""
         api_base = LAMAIL_API_BASE.rstrip("/")
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
 
         payload = {}
         selected_domain = random.choice(LAMAIL_DOMAINS) if LAMAIL_DOMAINS else ""
@@ -2177,7 +2232,7 @@ class ChatGPTRegister:
 
     def _fetch_emails_lamail(self, mail_token: str, email: str):
         api_base = LAMAIL_API_BASE.rstrip("/")
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         if not email:
             return []
         try:
@@ -2201,7 +2256,7 @@ class ChatGPTRegister:
 
     def _fetch_email_detail_lamail(self, mail_token: str, msg_id: str):
         api_base = LAMAIL_API_BASE.rstrip("/")
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         if not msg_id:
             return None
         try:
@@ -2254,7 +2309,7 @@ class ChatGPTRegister:
         """创建 TempMail.lol 临时邮箱，返回 (email, password, mail_token)"""
         api_base = TEMPMAIL_LOL_API_BASE.rstrip("/")
         payload = {}
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         try:
             resp = curl_requests.post(
                 f"{api_base}/inbox/create",
@@ -2280,7 +2335,7 @@ class ChatGPTRegister:
 
     def _fetch_emails_tempmail_lol(self, mail_token: str):
         api_base = TEMPMAIL_LOL_API_BASE.rstrip("/")
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         try:
             resp = curl_requests.get(
                 f"{api_base}/inbox",
@@ -2326,7 +2381,7 @@ class ChatGPTRegister:
                 f"当前已加载配置数: {len(CFMAIL_ACCOUNTS)}"
             )
 
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         local = f"oc{secrets.token_hex(5)}"
 
         try:
@@ -2370,7 +2425,7 @@ class ChatGPTRegister:
         """从 cfmail 拉取邮件列表"""
         if not self._cfmail_api_base:
             return []
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
+        proxies = _build_proxy_mapping(self.proxy)
         try:
             resp = curl_requests.get(
                 f"{self._cfmail_api_base}/api/mails",
@@ -2921,8 +2976,9 @@ class ChatGPTRegister:
         """通过 chatgpt.com 自身的 signin/openai 链建立 next-auth 登录态。"""
         self._print("[Session] 开始通过 ChatGPT 登录链建立 next-auth 会话...")
         web_session = curl_requests.Session(impersonate=self.impersonate)
-        if self.proxy:
-            web_session.proxies = {"http": self.proxy, "https": self.proxy}
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            web_session.proxies = proxy_map
         web_session.headers.update(dict(self.session.headers))
         web_session.cookies.set("oai-did", self.device_id, domain="chatgpt.com")
         web_session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
@@ -3438,8 +3494,9 @@ class ChatGPTRegister:
         self._print("[OAuth] 开始执行 Codex OAuth 纯协议流程...")
 
         oauth_session = curl_requests.Session(impersonate=self.impersonate)
-        if self.proxy:
-            oauth_session.proxies = {"http": self.proxy, "https": self.proxy}
+        proxy_map = _build_proxy_mapping(self.proxy)
+        if proxy_map:
+            oauth_session.proxies = proxy_map
         oauth_session.headers.update(dict(self.session.headers))
         oauth_session.cookies.set("oai-did", self.device_id, domain=".auth.openai.com")
         oauth_session.cookies.set("oai-did", self.device_id, domain="auth.openai.com")
