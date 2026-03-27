@@ -881,7 +881,8 @@ class PaymentBinder:
         billing_city = self._billing_value("payment_billing_city")
         billing_state = self._billing_value("payment_billing_state")
         billing_postal_code = self._billing_value("payment_billing_postal_code")
-        data = {
+
+        base_data = {
             "browser_locale": "zh-CN",
             "browser_timezone": "Asia/Tokyo",
             "elements_session_client[client_betas][0]": "custom_checkout_server_updates_1",
@@ -891,42 +892,63 @@ class PaymentBinder:
             "elements_session_client[stripe_js_id]": self.stripe_js_id,
             "elements_session_client[locale]": "zh-CN",
             "elements_session_client[is_aggregation_expected]": "false",
-            "customer_email": billing_email,
-            "payment_method_data[billing_details][name]": billing_name,
-            "payment_method_data[billing_details][email]": billing_email,
-            "payment_method_data[billing_details][address][line1]": billing_line1,
-            "payment_method_data[billing_details][address][city]": billing_city,
-            "payment_method_data[billing_details][address][state]": billing_state,
-            "payment_method_data[billing_details][address][postal_code]": billing_postal_code,
-            "payment_method_data[billing_details][address][country]": billing_country,
             "key": publishable_key,
             "_stripe_version": stripe_version,
         }
-        resp = self.stripe_session.post(
-            f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init",
-            data=data,
-            headers=self._stripe_api_headers(),
-            timeout=30,
-            impersonate="chrome136",
-        )
-        body_preview = (resp.text or "")[:500].replace("\n", " ").replace("\r", " ")
-        try:
-            payload = resp.json() if resp.content else {}
-        except Exception:
-            payload = {"body_preview": body_preview}
-        self.log(
-            "payment_pages/init: "
-            f"status={resp.status_code} "
-            f"billing_name={'yes' if billing_name else 'no'} "
-            f"billing_email={'yes' if billing_email else 'no'} "
-            f"billing_line1={'yes' if billing_line1 else 'no'}"
-        )
-        if resp.status_code == 200 and isinstance(payload, dict):
+        enriched_data = dict(base_data)
+        if billing_email:
+            enriched_data["customer_email"] = billing_email
+            enriched_data["payment_method_data[billing_details][email]"] = billing_email
+        if billing_name:
+            enriched_data["payment_method_data[billing_details][name]"] = billing_name
+        if billing_line1:
+            enriched_data["payment_method_data[billing_details][address][line1]"] = billing_line1
+        if billing_city:
+            enriched_data["payment_method_data[billing_details][address][city]"] = billing_city
+        if billing_state:
+            enriched_data["payment_method_data[billing_details][address][state]"] = billing_state
+        if billing_postal_code:
+            enriched_data["payment_method_data[billing_details][address][postal_code]"] = billing_postal_code
+        if billing_country:
+            enriched_data["payment_method_data[billing_details][address][country]"] = billing_country
+
+        attempts: list[tuple[str, dict[str, str]]] = []
+        if enriched_data != base_data:
+            attempts.append(("billing_enriched", enriched_data))
+        attempts.append(("protocol_minimal", base_data))
+
+        last_payload: dict[str, Any] = {}
+        for attempt_mode, data in attempts:
+            resp = self.stripe_session.post(
+                f"{STRIPE_API}/v1/payment_pages/{checkout_session_id}/init",
+                data=data,
+                headers=self._stripe_api_headers(),
+                timeout=30,
+                impersonate="chrome136",
+            )
+            body_preview = (resp.text or "")[:500].replace("\n", " ").replace("\r", " ")
+            try:
+                payload = resp.json() if resp.content else {}
+            except Exception:
+                payload = {"body_preview": body_preview}
+            if not isinstance(payload, dict):
+                payload = {"body_preview": body_preview}
+            payload.setdefault("body_preview", body_preview)
+            payload["status_code"] = resp.status_code
+            payload["_init_mode"] = attempt_mode
+            self.log(
+                "payment_pages/init: "
+                f"mode={attempt_mode} status={resp.status_code} "
+                f"billing_name={'yes' if billing_name else 'no'} "
+                f"billing_email={'yes' if billing_email else 'no'} "
+                f"billing_line1={'yes' if billing_line1 else 'no'}"
+            )
             hosted_url = str(payload.get("stripe_hosted_url") or "").strip()
-            if hosted_url:
-                self.log(f"提取到 stripe_hosted_url: {hosted_url}")
-            return payload
-        return payload if isinstance(payload, dict) else {}
+            if resp.status_code == 200 and hosted_url:
+                self.log(f"提取到 stripe_hosted_url: {hosted_url} (mode={attempt_mode})")
+                return payload
+            last_payload = payload
+        return last_payload
 
     def create_checkout(self, mode: str | None = None) -> dict[str, Any]:
         generation_mode = self._payment_mode(mode)
@@ -1002,7 +1024,16 @@ class PaymentBinder:
         if generation_mode == "stripe_hosted":
             missing_fields = self._missing_hosted_billing_fields()
             if missing_fields:
-                raise RuntimeError(f"Stripe Hosted 模式缺少账单信息: {', '.join(missing_fields)}")
+                self.log(f"Stripe Hosted 账单信息不完整，先按 protocol 最简 init 尝试: {', '.join(missing_fields)}")
+            if not self.stripe_publishable_key:
+                page_probe = self.probe_checkout_page(checkout_url)
+                probed_key = str(page_probe.get("publishable_key") or "").strip()
+                if probed_key:
+                    self.stripe_publishable_key = probed_key
+                    self.log(f"从 checkout 页面补提取 publishable_key: {self.stripe_publishable_key[:18]}...")
+                if expected_amount is None and page_probe.get("expected_amount") is not None:
+                    expected_amount = page_probe.get("expected_amount")
+                    self.log(f"从 checkout 页面补提取 expected_amount: {expected_amount}")
             if not self.stripe_publishable_key:
                 raise RuntimeError("Stripe Hosted 模式缺少 publishable key，无法初始化 hosted page")
             init_payload = self.init_stripe_hosted_page(checkout_session_id, self.stripe_publishable_key)
@@ -1011,9 +1042,10 @@ class PaymentBinder:
                 expected_amount = self._extract_expected_amount(init_payload)
             if not stripe_hosted_url:
                 preview = str(init_payload.get("body_preview") or "").strip()
+                init_mode = str(init_payload.get("_init_mode") or "unknown").strip() or "unknown"
                 if preview:
-                    raise RuntimeError(f"已携带账单信息，但未获取到 stripe hosted 链接: {preview[:180]}")
-                raise RuntimeError("已携带账单信息，但未获取到 stripe hosted 链接")
+                    raise RuntimeError(f"Stripe Hosted 初始化未返回链接 (mode={init_mode}): {preview[:180]}")
+                raise RuntimeError(f"Stripe Hosted 初始化未返回链接 (mode={init_mode})")
             self.log(f"生成 stripe_hosted_url: {stripe_hosted_url}")
 
         primary_url = stripe_hosted_url if generation_mode == "stripe_hosted" else checkout_url
