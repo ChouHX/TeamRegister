@@ -31,6 +31,7 @@ class AccountRecord:
     password: str = ""
     type: str = "codex"
     tags: list[str] | None = None
+    payment_profile: dict[str, Any] | None = None
 
 
 class AccountStore:
@@ -65,6 +66,7 @@ class AccountStore:
                     password TEXT NOT NULL DEFAULT '',
                     type TEXT NOT NULL DEFAULT 'codex',
                     tags_json TEXT NOT NULL DEFAULT '[]',
+                    payment_profile_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
@@ -75,6 +77,8 @@ class AccountStore:
                 conn.execute("ALTER TABLE accounts ADD COLUMN password TEXT NOT NULL DEFAULT ''")
             if "tags_json" not in columns:
                 conn.execute("ALTER TABLE accounts ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
+            if "payment_profile_json" not in columns:
+                conn.execute("ALTER TABLE accounts ADD COLUMN payment_profile_json TEXT NOT NULL DEFAULT '{}' ")
             conn.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS trg_accounts_updated_at
@@ -94,8 +98,8 @@ class AccountStore:
                 INSERT INTO accounts (
                     email, account_id, access_token, refresh_token, id_token,
                     session_token, csrf_token, device_id, user_agent, sec_ch_ua,
-                    cookies_json, expired, last_refresh, password, type, tags_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cookies_json, expired, last_refresh, password, type, tags_json, payment_profile_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET
                     account_id=excluded.account_id,
                     access_token=excluded.access_token,
@@ -111,7 +115,8 @@ class AccountStore:
                     last_refresh=excluded.last_refresh,
                     password=CASE WHEN excluded.password <> '' THEN excluded.password ELSE accounts.password END,
                     type=excluded.type,
-                    tags_json=excluded.tags_json
+                    tags_json=excluded.tags_json,
+                    payment_profile_json=CASE WHEN excluded.payment_profile_json <> '{}' THEN excluded.payment_profile_json ELSE accounts.payment_profile_json END
                 """,
                 (
                     record.email,
@@ -130,6 +135,7 @@ class AccountStore:
                     record.password,
                     record.type,
                     json.dumps(record.tags or [], ensure_ascii=False),
+                    json.dumps(record.payment_profile or {}, ensure_ascii=False),
                 ),
             )
             conn.commit()
@@ -145,6 +151,32 @@ class AccountStore:
                 "SELECT * FROM accounts ORDER BY updated_at DESC, email ASC"
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    def find_account_by_access_token(self, access_token: str) -> Optional[dict[str, Any]]:
+        token = str(access_token or "").strip()
+        if not token:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM accounts WHERE access_token = ? ORDER BY updated_at DESC LIMIT 1",
+                (token,),
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def save_payment_profile(self, email: str, payment_profile: dict[str, Any]) -> bool:
+        target = str(email or "").strip()
+        if not target:
+            return False
+        normalized_profile = self._normalize_payment_profile(payment_profile)
+        if not normalized_profile:
+            return False
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE accounts SET payment_profile_json = ? WHERE email = ?",
+                (json.dumps(normalized_profile, ensure_ascii=False), target),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def delete_account(self, email: str) -> bool:
         with self._connect() as conn:
@@ -211,6 +243,29 @@ class AccountStore:
             conn.commit()
             return cursor.rowcount > 0
 
+    def _normalize_payment_profile(self, profile: Any) -> dict[str, Any]:
+        if not isinstance(profile, dict):
+            return {}
+        allowed_fields = (
+            "payment_billing_name",
+            "payment_billing_email",
+            "payment_billing_line1",
+            "payment_billing_city",
+            "payment_billing_state",
+            "payment_billing_postal_code",
+            "payment_billing_country",
+            "payment_card_number",
+            "payment_card_exp_month",
+            "payment_card_exp_year",
+            "payment_card_cvc",
+        )
+        normalized: dict[str, Any] = {}
+        for field in allowed_fields:
+            value = str(profile.get(field) or "").strip()
+            if value:
+                normalized[field] = value
+        return normalized
+
     def _normalize_payload(self, payload: dict[str, Any]) -> AccountRecord:
         cookies = payload.get("cookies") or {}
         if not isinstance(cookies, dict):
@@ -226,6 +281,7 @@ class AccountStore:
                 continue
             seen_tags.add(value)
             normalized_tags.append(value)
+        payment_profile = self._normalize_payment_profile(payload.get("payment_profile") or {})
         return AccountRecord(
             email=str(payload.get("email") or "").strip(),
             account_id=str(payload.get("account_id") or "").strip(),
@@ -243,6 +299,7 @@ class AccountStore:
             password=str(payload.get("password") or "").strip(),
             type=str(payload.get("type") or "codex").strip() or "codex",
             tags=normalized_tags,
+            payment_profile=payment_profile,
         )
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -260,6 +317,13 @@ class AccountStore:
                 tags = []
         except Exception:
             tags = []
+        payment_profile_json = str(row["payment_profile_json"] or "{}") if "payment_profile_json" in row.keys() else "{}"
+        try:
+            payment_profile = json.loads(payment_profile_json)
+            if not isinstance(payment_profile, dict):
+                payment_profile = {}
+        except Exception:
+            payment_profile = {}
         normalized_tags: list[str] = []
         seen_tags: set[str] = set()
         for item in tags:
@@ -285,4 +349,5 @@ class AccountStore:
             "password": row["password"],
             "cookies": cookies,
             "tags": normalized_tags,
+            "payment_profile": self._normalize_payment_profile(payment_profile),
         }

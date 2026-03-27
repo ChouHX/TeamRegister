@@ -2,7 +2,7 @@
 
 一个用于 ChatGPT 账号自动注册与补量的 Python 项目，支持：
 
-- 邮箱服务：`tempmail_lol` / `duckmail` / `lamail` / `cfmail`
+- 邮箱服务：`outlookmail` / `tempmail_lol` / `lamail` / `cfmail`
 - 注册后 OAuth 获取 Codex Token
 - Token 保存到本地并上传 CPA
 - 调度器定时检测账号数量，不足时自动触发注册
@@ -45,7 +45,10 @@ pip install curl_cffi
 
 关键字段：
 
-- `mail_provider`：`tempmail_lol` / `duckmail` / `lamail` / `cfmail`
+- `mail_provider`：`outlookmail` / `tempmail_lol` / `lamail` / `cfmail`
+- `outlookmail_config_path`：Outlook 邮箱池配置文件路径，默认 `outlookmail_accounts.txt`
+- `outlookmail_profile`：Outlook 邮箱池选择策略，默认 `auto`；也可填指定邮箱或配置名
+- `outlookmail_fetch_mode`：Outlook 拉邮方式，支持 `auto` / `graph` / `imap`
 - `proxy`：默认 `http://127.0.0.1:7890`
 - `enable_oauth`：是否执行 OAuth 获取 Token
 - `oauth_required`：OAuth 失败是否判定注册失败
@@ -60,10 +63,10 @@ pip install curl_cffi
 
 ```json
 {
-  "mail_provider": "tempmail_lol",
-  "lamail_api_base": "https://maliapi.215.im/v1",
-  "lamail_api_key": "",
-  "lamail_domain": "a.example.com,b.example.com",
+  "mail_provider": "outlookmail",
+  "outlookmail_config_path": "outlookmail_accounts.txt",
+  "outlookmail_profile": "auto",
+  "outlookmail_fetch_mode": "auto",
   "proxy": "http://127.0.0.1:7890",
   "enable_oauth": true,
   "oauth_required": true,
@@ -73,6 +76,49 @@ pip install curl_cffi
   "cpa_upload_every_n": 3
 }
 ```
+
+### OutlookMail 接入说明
+
+参考项目：[`outlookEmail/`](outlookEmail)
+
+当前实现会从 Outlook 邮箱池中选择一个已有账号用于接码，不再创建 DuckMail 临时邮箱。
+
+推荐配置文件格式为文本，每行一个账号：
+
+```text
+邮箱----密码----client_id----refresh_token
+```
+
+例如：
+
+```text
+user1@outlook.com----password1----client_id_1----refresh_token_1
+user2@outlook.com----password2----client_id_2----refresh_token_2
+```
+
+也支持 JSON 结构：
+
+```json
+{
+  "accounts": [
+    {
+      "name": "node-1",
+      "email": "user1@outlook.com",
+      "password": "password1",
+      "client_id": "client_id_1",
+      "refresh_token": "refresh_token_1",
+      "enabled": true
+    }
+  ]
+}
+```
+
+说明：
+
+- `outlookmail_fetch_mode=graph` 时优先走 Microsoft Graph API 读取邮件
+- `outlookmail_fetch_mode=imap` 时走 Outlook IMAP OAuth2 读取邮件
+- `outlookmail_fetch_mode=auto` 时先尝试 Graph，再回退到 IMAP
+- `outlookmail_profile=auto` 时轮询选择账号；也可指定某个 `name` 或邮箱地址固定使用
 
 ### LaMail 接入说明
 
@@ -141,9 +187,10 @@ http://127.0.0.1:8000
 1. 使用 [`templates/register.html`](templates/register.html) 单独存放页面模板
 2. 使用你指定的 TailwindCSS CDN 与 Font Awesome CDN
 3. 可填写代理、注册数量、并发数、CPA 上传阈值
-4. 可选择是否执行预检、是否注册前清理 CPA 无效号
-5. 后台线程执行现有 [`run_batch()`](ncs_register.py:2873)
-6. 页面显示最近一次执行日志与错误信息
+4. 可在前端直接配置 Outlook 邮箱池文件路径、账号选择策略、拉邮方式
+5. 可选择是否执行预检、是否注册前清理 CPA 无效号
+6. 后台线程执行现有 [`run_batch()`](app/ncs_register.py:3753)
+7. 页面显示最近一次执行日志与错误信息
 
 ---
 

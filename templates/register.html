@@ -233,20 +233,29 @@
             <div>
               <label class="block text-xs font-medium text-slate-700 mb-1">Provider</label>
               <select id="mailProviderSelect" name="mail_provider" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
-                {% for provider in ['duckmail', 'tempmail_lol', 'lamail', 'cfmail'] %}
+                {% for provider in ['outlookmail', 'tempmail_lol', 'lamail', 'cfmail'] %}
                 <option value="{{ provider }}" {% if state.last_form.mail_provider == provider %}selected{% endif %}>{{ provider }}</option>
                 {% endfor %}
               </select>
             </div>
 
-            <div data-mail-section="duckmail" class="mail-section space-y-3 hidden">
+            <div data-mail-section="outlookmail" class="mail-section space-y-3 hidden">
               <div>
-                <label class="block text-xs font-medium text-slate-700 mb-1">DuckMail API Base</label>
-                <input name="duckmail_api_base" value="{{ state.last_form.duckmail_api_base }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+                <label class="block text-xs font-medium text-slate-700 mb-1">OutlookMail Config Path</label>
+                <input name="outlookmail_config_path" value="{{ state.last_form.outlookmail_config_path }}" placeholder="outlookmail_accounts.txt" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+                <p class="mt-1 text-[11px] text-slate-400">每行格式：邮箱----密码----client_id----refresh_token，也支持 JSON accounts 列表。</p>
               </div>
               <div>
-                <label class="block text-xs font-medium text-slate-700 mb-1">DuckMail Bearer</label>
-                <input name="duckmail_bearer" value="{{ state.last_form.duckmail_bearer }}" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+                <label class="block text-xs font-medium text-slate-700 mb-1">OutlookMail Profile</label>
+                <input name="outlookmail_profile" value="{{ state.last_form.outlookmail_profile }}" placeholder="auto 或指定邮箱/配置名" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-700 mb-1">OutlookMail Fetch Mode</label>
+                <select name="outlookmail_fetch_mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                  {% for mode in ['auto', 'graph', 'imap'] %}
+                  <option value="{{ mode }}" {% if state.last_form.outlookmail_fetch_mode == mode %}selected{% endif %}>{{ mode }}</option>
+                  {% endfor %}
+                </select>
               </div>
             </div>
 
@@ -336,24 +345,43 @@
               </div>
             </div>
 
-            <div class="flex h-full flex-col gap-2 p-3">
-              <form id="payForm" method="post" action="/pay/start" class="flex h-full flex-col gap-2">
-                <div class="flex-1 min-h-0 space-y-2">
-                  <div class="flex items-center justify-between gap-3">
-                    <label class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Access Token</label>
-                    <span class="text-[11px] text-slate-400">支持直接粘贴完整 token</span>
+            <div class="flex h-full min-h-0 flex-col gap-2 p-3">
+              <form id="payForm" method="post" action="/pay/start" class="flex h-full min-h-0 flex-col gap-2">
+                <div class="flex-1 min-h-0 space-y-2 overflow-y-auto pr-2">
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-3">
+                      <label class="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Access Token</label>
+                      <span class="text-[11px] text-slate-400">支持直接粘贴完整 token</span>
+                    </div>
+                    <textarea id="payAccessTokenInput" name="payment_access_token" rows="2" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="block h-full min-h-[84px] w-full flex-1 resize-y rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-[11px] leading-5 text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100">{{ state.last_pay_form.payment_access_token }}</textarea>
                   </div>
-                  <textarea id="payAccessTokenInput" name="payment_access_token" rows="16" placeholder="粘贴 accesstoken，仅保留这一项必填；无需卡号、地址、账号选择" class="block h-full min-h-[220px] w-full flex-1 resize-y rounded-xl border border-slate-300 bg-white px-2.5 py-2.5 text-[11px] leading-5 text-slate-700 shadow-sm outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100 2xl:min-h-[260px]">{{ state.last_pay_form.payment_access_token }}</textarea>
+
+                  <div class="rounded-xl border border-slate-200 bg-slate-50 p-2.5 space-y-2">
+                    <div>
+                      <label class="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">生成模式</label>
+                      <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-700 cursor-pointer">
+                          <input type="radio" name="payment_generation_mode" value="checkout_only" {% if state.last_pay_form.payment_generation_mode != 'stripe_hosted' %}checked{% endif %} class="h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                          <span>仅生成 checkout</span>
+                        </label>
+                        <label class="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-700 cursor-pointer">
+                          <input type="radio" name="payment_generation_mode" value="stripe_hosted" {% if state.last_pay_form.payment_generation_mode == 'stripe_hosted' %}checked{% endif %} class="h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                          <span>生成 Stripe Hosted</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">连接设置</label>
+                      <input name="proxy" value="{{ state.last_pay_form.proxy }}" placeholder="代理，可留空" class="block w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
+                    </div>
+                  </div>
+
                 </div>
 
-                <div class="rounded-xl border border-slate-200 bg-slate-50 p-2.5">
-                  <label class="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">连接设置</label>
-                  <input name="proxy" value="{{ state.last_pay_form.proxy }}" placeholder="代理，可留空" class="block w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none transition focus:border-emerald-400 focus:ring-4 focus:ring-emerald-100" />
-                </div>
-
-                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div class="grid grid-cols-1 gap-2 border-t border-slate-200 pt-2 sm:grid-cols-3">
                   <button type="button" data-submit-action="/pay/start" class="inline-flex min-h-10 items-center justify-center rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-60" {% if state.running and state.current_task == 'pay' %}disabled{% endif %}>
-                    <i class="fa fa-link mr-1.5"></i>{% if state.running and state.current_task == 'pay' %}生成中{% else %}生成支付地址{% endif %}
+                    <i class="fa fa-link mr-1.5"></i>{% if state.running and state.current_task == 'pay' %}生成中{% else %}生成地址{% endif %}
                   </button>
                   <button type="button" data-submit-action="/pay/save" class="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition hover:bg-slate-50">
                     <i class="fa fa-save mr-1.5"></i>保存设置
@@ -469,7 +497,7 @@
                   <i class="fa fa-pause mr-2"></i>空闲
                 </span>
               </div>
-              <p class="mt-1 text-[11px] leading-5 text-slate-500">右侧集中展示 checkout 地址、stripe hosted page 地址以及当前验证状态。</p>
+              <p class="mt-1 text-[11px] leading-5 text-slate-500">支持两种模式：仅生成 checkout 链接，或携带账单信息生成 Stripe Hosted 链接。</p>
             </div>
             <span class="inline-flex shrink-0 items-center rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">STATUS</span>
           </div>
@@ -490,54 +518,51 @@
             </div>
           </div>
 
-          <div id="payHostedPagePanel" class="pay-subpanel mt-2 flex flex-col rounded-[18px] border border-emerald-200 bg-white/85 p-3 shadow-sm backdrop-blur-sm">
+          <div id="stripeHostedBillingPanel" class="mt-2 rounded-[18px] border border-sky-200 bg-white/90 p-3 shadow-sm {% if state.last_pay_form.payment_generation_mode != 'stripe_hosted' %}hidden{% endif %}">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <h3 class="text-sm font-semibold text-sky-900"><i class="fa fa-id-card-o mr-1.5"></i>Stripe Hosted 账单信息</h3>
+                <p class="mt-1 text-[11px] leading-5 text-sky-700">仅在生成 Stripe Hosted 链接时使用，填写后会自动复用到当前账号。</p>
+              </div>
+              <span class="inline-flex shrink-0 items-center rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 ring-1 ring-sky-200">HOSTED</span>
+            </div>
+
+            <div class="mt-2 grid grid-cols-2 gap-2">
+              <input form="payForm" name="payment_billing_name" value="{{ state.last_pay_form.payment_billing_name }}" placeholder="账单姓名" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_email" value="{{ state.last_pay_form.payment_billing_email }}" placeholder="账单邮箱" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_line1" value="{{ state.last_pay_form.payment_billing_line1 }}" placeholder="账单地址" class="col-span-2 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_city" value="{{ state.last_pay_form.payment_billing_city }}" placeholder="城市" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_state" value="{{ state.last_pay_form.payment_billing_state }}" placeholder="州/省" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_postal_code" value="{{ state.last_pay_form.payment_billing_postal_code }}" placeholder="邮编" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_billing_country" value="{{ state.last_pay_form.payment_billing_country or 'US' }}" placeholder="国家代码，如 US / JP" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_card_number" value="{{ state.last_pay_form.payment_card_number }}" placeholder="卡号" class="col-span-2 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_card_exp_month" value="{{ state.last_pay_form.payment_card_exp_month }}" placeholder="到期月 MM" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_card_exp_year" value="{{ state.last_pay_form.payment_card_exp_year }}" placeholder="到期年 YYYY" class="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+              <input form="payForm" name="payment_card_cvc" value="{{ state.last_pay_form.payment_card_cvc }}" placeholder="CVC" class="col-span-2 rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs text-slate-700 outline-none focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+            </div>
+          </div>
+
+          <div id="payHostedPagePanel" class="mt-2 rounded-[18px] border border-emerald-200 bg-white/85 p-3 shadow-sm backdrop-blur-sm {% if not state.pay_hosted_page.primary_url and not state.pay_hosted_page.checkout_url %}hidden{% endif %}">
             <div class="flex items-start justify-between gap-2.5">
               <div class="min-w-0">
-                <h3 class="text-sm font-semibold text-emerald-900"><i class="fa fa-external-link mr-1.5"></i>支付地址</h3>
-                <p class="mt-1 text-xs leading-5 text-emerald-700" id="payHostedPageMessage">右侧面板始终显示占位组件，便于在生成前后保持稳定布局。</p>
+                <h3 class="text-sm font-semibold text-emerald-900"><i class="fa fa-link mr-1.5"></i><span id="payPrimaryLinkLabel">{{ state.pay_hosted_page.primary_label or ('Stripe Hosted 地址' if state.pay_hosted_page.mode == 'stripe_hosted' else 'Checkout 地址') }}</span></h3>
+                <p class="mt-1 text-xs leading-5 text-emerald-700" id="payHostedPageMessage">按当前模式展示单一主链接，便于直接打开或复制。</p>
               </div>
-              <span class="inline-flex shrink-0 items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200">READY</span>
+              <a id="payCheckoutLink" href="{{ state.pay_hosted_page.primary_url or state.pay_hosted_page.checkout_url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-slate-800 {% if not state.pay_hosted_page.primary_url and not state.pay_hosted_page.checkout_url %}pointer-events-none opacity-50{% endif %}">
+                <i class="fa fa-external-link mr-1.5"></i>打开
+              </a>
             </div>
 
-            <div class="mt-2 grid grid-cols-1 gap-2 md:grid-cols-3">
-              <div class="min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
-                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">Checkout Session</div>
-                <div id="payHostedPageSession" class="mt-1 break-all text-xs leading-5 text-slate-700">{{ state.pay_hosted_page.checkout_session_id or '-' }}</div>
-              </div>
-              <div class="min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
-                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">预期金额</div>
-                <div id="payHostedPageAmount" class="mt-1 text-sm font-semibold text-slate-800">{{ state.pay_hosted_page.expected_amount if state.pay_hosted_page.expected_amount is not none else '-' }}</div>
-              </div>
-              <div class="min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
-                <div class="text-[11px] uppercase tracking-[0.08em] text-slate-400">当前主链接</div>
-                <div id="payHostedPageUrlText" class="mt-1 break-all text-xs leading-5 text-slate-700">{{ state.pay_hosted_page.url or '尚未生成链接' }}</div>
-              </div>
+            <div class="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-600">
+              <div class="rounded-lg bg-slate-50 px-2.5 py-2">模式：<span id="payPrimaryModeText" class="font-semibold">{{ 'Stripe Hosted' if state.pay_hosted_page.mode == 'stripe_hosted' else 'Checkout Only' }}</span></div>
+              <div class="rounded-lg bg-slate-50 px-2.5 py-2">Session：<span id="payHostedPageSession" class="font-semibold break-all">{{ state.pay_hosted_page.checkout_session_id or '-' }}</span></div>
             </div>
 
-            <div class="mt-2 grid grid-cols-1 gap-2 2xl:grid-cols-2">
-              <div class="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div class="flex items-center justify-between gap-2.5">
-                  <div class="text-sm font-semibold text-slate-900">Checkout 地址</div>
-                  <a id="payCheckoutLink" href="{{ state.pay_hosted_page.checkout_url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-slate-800 {% if not state.pay_hosted_page.checkout_url %}pointer-events-none opacity-50{% endif %}">
-                    <i class="fa fa-external-link mr-1.5"></i>打开
-                  </a>
-                </div>
-                <div id="payCheckoutUrlText" class="mt-2 break-all rounded-lg bg-slate-50 px-2.5 py-2.5 text-[11px] leading-5 text-slate-600">{{ state.pay_hosted_page.checkout_url or '尚未生成 checkout 地址' }}</div>
-              </div>
-              <div class="min-w-0 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
-                <div class="flex items-center justify-between gap-2.5">
-                  <div class="text-sm font-semibold text-slate-900">Stripe Hosted Page</div>
-                  <a id="payHostedPageLink" href="{{ state.pay_hosted_page.stripe_hosted_url or state.pay_hosted_page.url or '#' }}" target="_blank" rel="noopener noreferrer" class="inline-flex shrink-0 items-center rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-emerald-700 {% if not state.pay_hosted_page.stripe_hosted_url and not state.pay_hosted_page.url %}pointer-events-none opacity-50{% endif %}">
-                    <i class="fa fa-external-link mr-1.5"></i>打开
-                  </a>
-                </div>
-                <div id="payHostedStripeUrlText" class="mt-2 break-all rounded-lg bg-emerald-50 px-2.5 py-2.5 text-[11px] leading-5 text-emerald-800">{{ state.pay_hosted_page.stripe_hosted_url or '尚未生成 stripe hosted page 地址' }}</div>
-              </div>
-            </div>
+            <div id="payCheckoutUrlText" class="mt-2 break-all rounded-lg bg-slate-50 px-2.5 py-2.5 text-[11px] leading-5 text-slate-700">{{ state.pay_hosted_page.primary_url or state.pay_hosted_page.checkout_url or '尚未生成支付地址' }}</div>
 
             <div class="mt-2 flex flex-wrap gap-2">
               <button type="button" id="copyHostedPageBtn" class="inline-flex items-center justify-center rounded-lg border border-emerald-300 bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 transition hover:bg-emerald-100">
-                <i class="fa fa-copy mr-1.5"></i>复制主链接
+                <i class="fa fa-copy mr-1.5"></i>复制当前主链接
               </button>
             </div>
           </div>
@@ -689,36 +714,32 @@
 
     function updatePayHostedPagePanel(hostedPage) {
       const panel = document.getElementById('payHostedPagePanel');
-      const sessionEl = document.getElementById('payHostedPageSession');
-      const amountEl = document.getElementById('payHostedPageAmount');
-      const linkEl = document.getElementById('payHostedPageLink');
       const checkoutLinkEl = document.getElementById('payCheckoutLink');
-      const urlTextEl = document.getElementById('payHostedPageUrlText');
       const checkoutUrlTextEl = document.getElementById('payCheckoutUrlText');
-      const hostedStripeUrlTextEl = document.getElementById('payHostedStripeUrlText');
+      const messageEl = document.getElementById('payHostedPageMessage');
+      const primaryLabelEl = document.getElementById('payPrimaryLinkLabel');
+      const primaryModeEl = document.getElementById('payPrimaryModeText');
+      const sessionEl = document.getElementById('payHostedPageSession');
       latestPayHostedPage = hostedPage && typeof hostedPage === 'object' ? hostedPage : null;
       if (!panel) return;
-      const url = (latestPayHostedPage?.url || '').trim();
-      const checkoutUrl = (latestPayHostedPage?.checkout_url || '').trim();
-      const stripeHostedUrl = (latestPayHostedPage?.stripe_hosted_url || '').trim();
-      const visible = !!(url || checkoutUrl || stripeHostedUrl);
+      const mode = (latestPayHostedPage?.mode || 'checkout_only').trim();
+      const primaryUrl = (latestPayHostedPage?.primary_url || latestPayHostedPage?.checkout_url || latestPayHostedPage?.url || '').trim();
+      const visible = !!primaryUrl;
       panel.classList.toggle('hidden', !visible);
-      if (sessionEl) sessionEl.textContent = latestPayHostedPage?.checkout_session_id || '-';
-      if (amountEl) amountEl.textContent = latestPayHostedPage?.expected_amount ?? '-';
-      if (linkEl) {
-        const primaryLink = stripeHostedUrl || url || '#';
-        linkEl.href = primaryLink;
-        linkEl.classList.toggle('pointer-events-none', !stripeHostedUrl && !url);
-        linkEl.classList.toggle('opacity-50', !stripeHostedUrl && !url);
-      }
       if (checkoutLinkEl) {
-        checkoutLinkEl.href = checkoutUrl || '#';
-        checkoutLinkEl.classList.toggle('pointer-events-none', !checkoutUrl);
-        checkoutLinkEl.classList.toggle('opacity-50', !checkoutUrl);
+        checkoutLinkEl.href = primaryUrl || '#';
+        checkoutLinkEl.classList.toggle('pointer-events-none', !primaryUrl);
+        checkoutLinkEl.classList.toggle('opacity-50', !primaryUrl);
       }
-      if (urlTextEl) urlTextEl.textContent = url || '尚未生成链接';
-      if (checkoutUrlTextEl) checkoutUrlTextEl.textContent = checkoutUrl || '尚未生成 checkout 地址';
-      if (hostedStripeUrlTextEl) hostedStripeUrlTextEl.textContent = stripeHostedUrl || '尚未生成 stripe hosted page 地址';
+      if (checkoutUrlTextEl) checkoutUrlTextEl.textContent = primaryUrl || '尚未生成支付地址';
+      if (primaryLabelEl) primaryLabelEl.textContent = latestPayHostedPage?.primary_label || (mode === 'stripe_hosted' ? 'Stripe Hosted 地址' : 'Checkout 地址');
+      if (primaryModeEl) primaryModeEl.textContent = mode === 'stripe_hosted' ? 'Stripe Hosted' : 'Checkout Only';
+      if (sessionEl) sessionEl.textContent = latestPayHostedPage?.checkout_session_id || '-';
+      if (messageEl) {
+        messageEl.textContent = mode === 'stripe_hosted'
+          ? '已携带账单信息并生成 Stripe Hosted 链接。'
+          : '当前仅生成 OpenAI checkout 链接。';
+      }
     }
 
     function updatePayVerificationPanel(verification) {
@@ -839,6 +860,19 @@
     if (shouldUsePayPolling) {
       ensureStatusPolling();
       pollStatusFallback();
+    }
+
+    if (activeTab === 'pay') {
+      const stripeHostedBillingPanel = document.getElementById('stripeHostedBillingPanel');
+      const generationModeInputs = document.querySelectorAll('input[name="payment_generation_mode"]');
+
+      function syncPayGenerationMode() {
+        const selected = document.querySelector('input[name="payment_generation_mode"]:checked')?.value || 'checkout_only';
+        stripeHostedBillingPanel?.classList.toggle('hidden', selected !== 'stripe_hosted');
+      }
+
+      generationModeInputs.forEach((input) => input.addEventListener('change', syncPayGenerationMode));
+      syncPayGenerationMode();
     }
 
     if (activeTab === 'register') {
@@ -995,20 +1029,20 @@
       const copyHostedPageBtn = document.getElementById('copyHostedPageBtn');
 
       copyHostedPageBtn?.addEventListener('click', async () => {
-        const url = (latestPayHostedPage?.stripe_hosted_url || latestPayHostedPage?.url || latestPayHostedPage?.checkout_url || '').trim();
+        const url = (latestPayHostedPage?.primary_url || latestPayHostedPage?.checkout_url || latestPayHostedPage?.url || '').trim();
         if (!url) {
-          showErrorDialog('当前没有可复制的支付链接');
+          showErrorDialog('当前没有可复制的链接');
           return;
         }
         try {
           await navigator.clipboard.writeText(url);
-          showToast('支付链接已复制', 'success');
+          showToast('当前主链接已复制', 'success');
         } catch (e) {
           showErrorDialog(`复制链接失败: ${e?.message || e}`);
         }
       });
       continueVerificationBtn?.addEventListener('click', async () => {
-        try {
+try {
           const res = await fetch('/pay/verification/continue', {
             method: 'POST',
             headers: {

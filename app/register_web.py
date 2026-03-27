@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import traceback
 from contextlib import redirect_stdout, redirect_stderr
@@ -58,13 +59,14 @@ class RegisterState:
         return {
             "proxy": str(cfg.get("proxy", ncs_register.DEFAULT_PROXY or "")),
             "total_accounts": str(cfg.get("total_accounts", ncs_register.DEFAULT_TOTAL_ACCOUNTS)),
-            "max_workers": "3",
-            "cpa_cleanup": "true" if ncs_register.CPA_CLEANUP_ENABLED else "false",
+            "max_workers": str(cfg.get("max_workers", 3)),
+            "cpa_cleanup": "true" if ncs_register._as_bool(cfg.get("cpa_cleanup", False)) else "false",
             "cpa_upload_every_n": str(cfg.get("cpa_upload_every_n", ncs_register.CPA_UPLOAD_EVERY_N)),
-            "run_preflight": "true",
+            "run_preflight": "true" if ncs_register._as_bool(cfg.get("run_preflight", True)) else "false",
             "mail_provider": str(cfg.get("mail_provider", ncs_register.MAIL_PROVIDER)),
-            "duckmail_api_base": str(cfg.get("duckmail_api_base", ncs_register.DUCKMAIL_API_BASE)),
-            "duckmail_bearer": str(cfg.get("duckmail_bearer", ncs_register.DUCKMAIL_BEARER)),
+            "outlookmail_config_path": str(cfg.get("outlookmail_config_path", ncs_register.OUTLOOKMAIL_CONFIG_PATH)),
+            "outlookmail_profile": str(cfg.get("outlookmail_profile", ncs_register.OUTLOOKMAIL_PROFILE_MODE)),
+            "outlookmail_fetch_mode": str(cfg.get("outlookmail_fetch_mode", ncs_register.OUTLOOKMAIL_FETCH_MODE)),
             "tempmail_lol_api_base": str(cfg.get("tempmail_lol_api_base", ncs_register.TEMPMAIL_LOL_API_BASE)),
             "lamail_api_base": str(cfg.get("lamail_api_base", ncs_register.LAMAIL_API_BASE)),
             "lamail_api_key": str(cfg.get("lamail_api_key", ncs_register.LAMAIL_API_KEY)),
@@ -79,25 +81,140 @@ class RegisterState:
 
     @staticmethod
     def _default_pay_form() -> dict[str, str]:
-        cfg = ncs_register._load_config()
+        cfg = payment_bind_app.load_config()
         return {
             "proxy": str(cfg.get("proxy", "")),
             "payment_access_token": "",
+            "payment_generation_mode": payment_bind_app.normalize_payment_generation_mode(
+                cfg.get("payment_generation_mode", payment_bind_app.DEFAULT_PAYMENT_GENERATION_MODE)
+            ),
+            "payment_billing_name": str(cfg.get("payment_billing_name", "")),
+            "payment_billing_email": str(cfg.get("payment_billing_email", "")),
+            "payment_billing_line1": str(cfg.get("payment_billing_line1", "")),
+            "payment_billing_city": str(cfg.get("payment_billing_city", "")),
+            "payment_billing_state": str(cfg.get("payment_billing_state", "")),
+            "payment_billing_postal_code": str(cfg.get("payment_billing_postal_code", "")),
+            "payment_billing_country": str(cfg.get("payment_billing_country", cfg.get("payment_country", "US"))),
+            "payment_card_number": str(cfg.get("payment_card_number", "")),
+            "payment_card_exp_month": str(cfg.get("payment_card_exp_month", "")),
+            "payment_card_exp_year": str(cfg.get("payment_card_exp_year", "")),
+            "payment_card_cvc": str(cfg.get("payment_card_cvc", "")),
         }
+
+
+_REGISTER_FAST_DELAY_FACTOR = 0.45
+_REGISTER_FAST_OTP_INTERVALS = {
+    "default": 1.0,
+    "outlookmail": 1.0,
+    "tempmail_lol": 0.8,
+    "lamail": 0.6,
+    "cfmail": 1.0,
+}
+
+_REGISTER_LOG_SKIP_PATTERNS = (
+    re.compile(r"^\s*$"),
+    re.compile(r"^进度:\s*\["),
+    re.compile(r"^\[阶段\]\s"),
+    re.compile(r"^\[OTP\]\s等待中"),
+    re.compile(r"^\[OAuth\]\sOTP 等待中"),
+    re.compile(r"^\s*(ChatGPT 批量自动注册|注册数量:|邮箱服务:|OutlookMail 配置:|OutlookMail 模式:|OutlookMail 拉取:|cfmail 配置:|cfmail 模式:|TempMail\.lol:|LaMail:|LaMail 域名池:|OAuth:|Token输出:|CPA分批上传:|OTP轮询:|Delay系数:|输出文件:)\b"),
+    re.compile(r"^[#=]{10,}$"),
+)
+
+
+def _cap_runtime_float(value: Any, *, fallback: float, upper: float, lower: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = fallback
+    return max(lower, min(parsed, upper))
+
+
+def _configure_fast_register_runtime() -> None:
+    ncs_register.REGISTER_DELAY_FACTOR = _cap_runtime_float(
+        getattr(ncs_register, "REGISTER_DELAY_FACTOR", _REGISTER_FAST_DELAY_FACTOR),
+        fallback=_REGISTER_FAST_DELAY_FACTOR,
+        upper=_REGISTER_FAST_DELAY_FACTOR,
+        lower=0.0,
+    )
+    ncs_register.OTP_POLL_INTERVAL_DEFAULT = _cap_runtime_float(
+        getattr(ncs_register, "OTP_POLL_INTERVAL_DEFAULT", _REGISTER_FAST_OTP_INTERVALS["default"]),
+        fallback=_REGISTER_FAST_OTP_INTERVALS["default"],
+        upper=_REGISTER_FAST_OTP_INTERVALS["default"],
+        lower=0.2,
+    )
+    current_intervals = dict(getattr(ncs_register, "OTP_POLL_INTERVAL_BY_PROVIDER", {}) or {})
+    ncs_register.OTP_POLL_INTERVAL_BY_PROVIDER = {
+        "outlookmail": _cap_runtime_float(
+            current_intervals.get("outlookmail", ncs_register.OTP_POLL_INTERVAL_DEFAULT),
+            fallback=_REGISTER_FAST_OTP_INTERVALS["outlookmail"],
+            upper=_REGISTER_FAST_OTP_INTERVALS["outlookmail"],
+            lower=0.2,
+        ),
+        "tempmail_lol": _cap_runtime_float(
+            current_intervals.get("tempmail_lol", _REGISTER_FAST_OTP_INTERVALS["tempmail_lol"]),
+            fallback=_REGISTER_FAST_OTP_INTERVALS["tempmail_lol"],
+            upper=_REGISTER_FAST_OTP_INTERVALS["tempmail_lol"],
+            lower=0.2,
+        ),
+        "lamail": _cap_runtime_float(
+            current_intervals.get("lamail", _REGISTER_FAST_OTP_INTERVALS["lamail"]),
+            fallback=_REGISTER_FAST_OTP_INTERVALS["lamail"],
+            upper=_REGISTER_FAST_OTP_INTERVALS["lamail"],
+            lower=0.2,
+        ),
+        "cfmail": _cap_runtime_float(
+            current_intervals.get("cfmail", _REGISTER_FAST_OTP_INTERVALS["cfmail"]),
+            fallback=_REGISTER_FAST_OTP_INTERVALS["cfmail"],
+            upper=_REGISTER_FAST_OTP_INTERVALS["cfmail"],
+            lower=0.2,
+        ),
+    }
+
+
+def _normalize_register_log_line(line: str) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(line or ""))
+    return text.replace("\u0000", "").strip()
+
+
+def _should_skip_register_log_line(line: str) -> bool:
+    return any(pattern.search(line) for pattern in _REGISTER_LOG_SKIP_PATTERNS)
 
 
 class _QueueLogWriter:
     def __init__(self, queue: Queue) -> None:
         self.queue = queue
+        self._buffer = ""
+
+    def _emit_line(self, raw_line: str) -> None:
+        line = _normalize_register_log_line(raw_line)
+        if not line or _should_skip_register_log_line(line):
+            return
+        self.queue.put(("log", f"{line}\n"))
+
+    def _drain_buffer(self, *, force: bool = False) -> None:
+        if not self._buffer:
+            return
+        text = self._buffer.replace("\r", "\n")
+        parts = text.split("\n")
+        remainder = "" if force else parts.pop()
+        for raw_line in parts:
+            self._emit_line(raw_line)
+        self._buffer = remainder
+        if force and self._buffer:
+            self._emit_line(self._buffer)
+            self._buffer = ""
 
     def write(self, data: str) -> int:
-        if data:
-            self.queue.put(("log", data))
-            return len(data)
-        return 0
+        if not data:
+            return 0
+        self._buffer += data
+        if "\n" in data or "\r" in data:
+            self._drain_buffer()
+        return len(data)
 
     def flush(self) -> None:
-        return None
+        self._drain_buffer(force=True)
 
 
 STATE = RegisterState()
@@ -168,8 +285,18 @@ def _load_current_config() -> dict[str, Any]:
 def _reload_runtime_config() -> None:
     fresh = ncs_register._load_config()
     ncs_register._CONFIG = fresh
-    ncs_register.DUCKMAIL_API_BASE = fresh["duckmail_api_base"]
-    ncs_register.DUCKMAIL_BEARER = fresh["duckmail_bearer"]
+    ncs_register.OUTLOOKMAIL_CONFIG_PATH = str(fresh.get("outlookmail_config_path", "outlookmail_accounts.txt") or "").strip()
+    ncs_register.OUTLOOKMAIL_PROFILE_MODE = str(fresh.get("outlookmail_profile", "auto") or "auto").strip() or "auto"
+    ncs_register.OUTLOOKMAIL_FETCH_MODE = ncs_register._normalize_outlookmail_fetch_mode(
+        fresh.get("outlookmail_fetch_mode", "auto")
+    )
+    ncs_register.OUTLOOKMAIL_ACCOUNTS = ncs_register._build_outlookmail_accounts(
+        ncs_register._load_outlookmail_accounts_from_file(ncs_register.OUTLOOKMAIL_CONFIG_PATH, silent=True)
+    )
+    outlook_cfg_path = Path(ncs_register.OUTLOOKMAIL_CONFIG_PATH) if ncs_register.OUTLOOKMAIL_CONFIG_PATH else None
+    ncs_register.OUTLOOKMAIL_CONFIG_MTIME = (
+        outlook_cfg_path.stat().st_mtime if outlook_cfg_path and outlook_cfg_path.exists() else None
+    )
     ncs_register.TEMPMAIL_LOL_API_BASE = fresh.get("tempmail_lol_api_base", "https://api.tempmail.lol/v2").rstrip("/")
     ncs_register.LAMAIL_API_BASE = fresh.get("lamail_api_base", "https://maliapi.215.im/v1").rstrip("/")
     ncs_register.LAMAIL_API_KEY = str(fresh.get("lamail_api_key", "") or "").strip()
@@ -191,11 +318,11 @@ def _reload_runtime_config() -> None:
     ncs_register.UPLOAD_API_PROXY = str(fresh.get("upload_api_proxy", "") or "").strip()
     ncs_register.CPA_CLEANUP_ENABLED = ncs_register._as_bool(fresh.get("cpa_cleanup_enabled", True))
     ncs_register.CPA_UPLOAD_EVERY_N = max(1, int(fresh.get("cpa_upload_every_n", 3) or 3))
-    ncs_register.MAIL_PROVIDER = str(fresh.get("mail_provider", "duckmail")).strip().lower()
+    ncs_register.MAIL_PROVIDER = str(fresh.get("mail_provider", "outlookmail")).strip().lower()
     ncs_register.REGISTER_DELAY_FACTOR = max(0.0, float(fresh.get("register_delay_factor", 1.0) or 1.0))
     ncs_register.OTP_POLL_INTERVAL_DEFAULT = max(0.2, float(fresh.get("otp_poll_interval_default", 2.0) or 2.0))
     ncs_register.OTP_POLL_INTERVAL_BY_PROVIDER = {
-        "duckmail": max(0.2, float(fresh.get("otp_poll_interval_duckmail", ncs_register.OTP_POLL_INTERVAL_DEFAULT) or ncs_register.OTP_POLL_INTERVAL_DEFAULT)),
+        "outlookmail": max(0.2, float(fresh.get("otp_poll_interval_outlookmail", ncs_register.OTP_POLL_INTERVAL_DEFAULT) or ncs_register.OTP_POLL_INTERVAL_DEFAULT)),
         "tempmail_lol": max(0.2, float(fresh.get("otp_poll_interval_tempmail_lol", 1.5) or 1.5)),
         "lamail": max(0.2, float(fresh.get("otp_poll_interval_lamail", 1.0) or 1.0)),
         "cfmail": max(0.2, float(fresh.get("otp_poll_interval_cfmail", 1.5) or 1.5)),
@@ -230,9 +357,16 @@ def _save_register_config(form: dict[str, str]) -> None:
         {
             "proxy": form.get("proxy", current.get("proxy", "")).strip(),
             "total_accounts": max(1, int(form.get("total_accounts", current.get("total_accounts", 1)) or 1)),
-            "mail_provider": form.get("mail_provider", current.get("mail_provider", "duckmail")).strip(),
-            "duckmail_api_base": form.get("duckmail_api_base", current.get("duckmail_api_base", "")).strip(),
-            "duckmail_bearer": form.get("duckmail_bearer", current.get("duckmail_bearer", "")).strip(),
+            "max_workers": max(1, int(form.get("max_workers", current.get("max_workers", 3)) or 3)),
+            "cpa_cleanup": str(form.get("cpa_cleanup", current.get("cpa_cleanup", False))).lower() == "true",
+            "cpa_upload_every_n": max(1, int(form.get("cpa_upload_every_n", current.get("cpa_upload_every_n", 3)) or 3)),
+            "run_preflight": str(form.get("run_preflight", current.get("run_preflight", True))).lower() == "true",
+            "mail_provider": form.get("mail_provider", current.get("mail_provider", "outlookmail")).strip(),
+            "outlookmail_config_path": form.get("outlookmail_config_path", current.get("outlookmail_config_path", "")).strip(),
+            "outlookmail_profile": form.get("outlookmail_profile", current.get("outlookmail_profile", "auto")).strip() or "auto",
+            "outlookmail_fetch_mode": ncs_register._normalize_outlookmail_fetch_mode(
+                form.get("outlookmail_fetch_mode", current.get("outlookmail_fetch_mode", "auto"))
+            ),
             "tempmail_lol_api_base": form.get("tempmail_lol_api_base", current.get("tempmail_lol_api_base", "")).strip(),
             "lamail_api_base": form.get("lamail_api_base", current.get("lamail_api_base", "")).strip(),
             "lamail_api_key": form.get("lamail_api_key", current.get("lamail_api_key", "")).strip(),
@@ -243,9 +377,11 @@ def _save_register_config(form: dict[str, str]) -> None:
             "upload_api_token": form.get("upload_api_token", current.get("upload_api_token", "")).strip(),
             "upload_api_proxy": form.get("upload_api_proxy", current.get("upload_api_proxy", "")).strip(),
             "cpa_cleanup_enabled": form.get("cpa_cleanup_enabled", str(current.get("cpa_cleanup_enabled", False))).lower() == "true",
-            "cpa_upload_every_n": max(1, int(form.get("cpa_upload_every_n", current.get("cpa_upload_every_n", 3)) or 3)),
         }
     )
+    current.pop("duckmail_api_base", None)
+    current.pop("duckmail_bearer", None)
+    current.pop("otp_poll_interval_duckmail", None)
     _save_config_file(current)
 
 
@@ -255,15 +391,71 @@ def _save_pay_config(form: dict[str, str]) -> None:
     current.update(
         {
             "proxy": form.get("proxy", current.get("proxy", "")).strip(),
+            "payment_generation_mode": payment_bind_app.normalize_payment_generation_mode(
+                form.get("payment_generation_mode", current.get("payment_generation_mode", payment_bind_app.DEFAULT_PAYMENT_GENERATION_MODE))
+            ),
+            "payment_billing_name": str(form.get("payment_billing_name", current.get("payment_billing_name", "")) or "").strip(),
+            "payment_billing_email": str(form.get("payment_billing_email", current.get("payment_billing_email", "")) or "").strip(),
+            "payment_billing_line1": str(form.get("payment_billing_line1", current.get("payment_billing_line1", "")) or "").strip(),
+            "payment_billing_city": str(form.get("payment_billing_city", current.get("payment_billing_city", "")) or "").strip(),
+            "payment_billing_state": str(form.get("payment_billing_state", current.get("payment_billing_state", "")) or "").strip(),
+            "payment_billing_postal_code": str(form.get("payment_billing_postal_code", current.get("payment_billing_postal_code", "")) or "").strip(),
+            "payment_billing_country": str(form.get("payment_billing_country", current.get("payment_billing_country", current.get("payment_country", "US"))) or "US").strip().upper(),
+            "payment_card_number": str(form.get("payment_card_number", current.get("payment_card_number", "")) or "").strip(),
+            "payment_card_exp_month": str(form.get("payment_card_exp_month", current.get("payment_card_exp_month", "")) or "").strip(),
+            "payment_card_exp_year": str(form.get("payment_card_exp_year", current.get("payment_card_exp_year", "")) or "").strip(),
+            "payment_card_cvc": str(form.get("payment_card_cvc", current.get("payment_card_cvc", "")) or "").strip(),
         }
     )
     _save_config_file(current)
 
 
+def _payment_profile_from_form(form: dict[str, str]) -> dict[str, str]:
+    profile: dict[str, str] = {}
+    for field in payment_bind_app.PAYMENT_PROFILE_FIELDS:
+        value = str(form.get(field) or "").strip()
+        if value:
+            profile[field] = value
+    return profile
+
+
+def _merge_pay_form_with_account_profile(form: dict[str, str]) -> tuple[dict[str, str], str]:
+    merged = dict(form)
+    access_token = str(merged.get("payment_access_token") or "").strip()
+    account = ACCOUNT_STORE.find_account_by_access_token(access_token)
+    if not account:
+        return merged, ""
+    profile = account.get("payment_profile") if isinstance(account.get("payment_profile"), dict) else {}
+    for field in payment_bind_app.PAYMENT_PROFILE_FIELDS:
+        if str(merged.get(field) or "").strip():
+            continue
+        value = str(profile.get(field) or "").strip() if isinstance(profile, dict) else ""
+        if value:
+            merged[field] = value
+    return merged, str(account.get("email") or "").strip()
+
+
+def _save_pay_profile_for_account(email: str, form: dict[str, str]) -> bool:
+    target = str(email or "").strip()
+    if not target:
+        return False
+    return ACCOUNT_STORE.save_payment_profile(target, _payment_profile_from_form(form))
+
+
 
 def _apply_register_form_runtime(form: dict[str, str]) -> None:
-    ncs_register.DUCKMAIL_API_BASE = form.get("duckmail_api_base", ncs_register.DUCKMAIL_API_BASE).strip()
-    ncs_register.DUCKMAIL_BEARER = form.get("duckmail_bearer", ncs_register.DUCKMAIL_BEARER).strip()
+    ncs_register.OUTLOOKMAIL_CONFIG_PATH = form.get("outlookmail_config_path", ncs_register.OUTLOOKMAIL_CONFIG_PATH).strip()
+    ncs_register.OUTLOOKMAIL_PROFILE_MODE = form.get("outlookmail_profile", ncs_register.OUTLOOKMAIL_PROFILE_MODE).strip() or "auto"
+    ncs_register.OUTLOOKMAIL_FETCH_MODE = ncs_register._normalize_outlookmail_fetch_mode(
+        form.get("outlookmail_fetch_mode", ncs_register.OUTLOOKMAIL_FETCH_MODE)
+    )
+    ncs_register.OUTLOOKMAIL_ACCOUNTS = ncs_register._build_outlookmail_accounts(
+        ncs_register._load_outlookmail_accounts_from_file(ncs_register.OUTLOOKMAIL_CONFIG_PATH, silent=True)
+    )
+    outlook_cfg_path = Path(ncs_register.OUTLOOKMAIL_CONFIG_PATH) if ncs_register.OUTLOOKMAIL_CONFIG_PATH else None
+    ncs_register.OUTLOOKMAIL_CONFIG_MTIME = (
+        outlook_cfg_path.stat().st_mtime if outlook_cfg_path and outlook_cfg_path.exists() else None
+    )
     ncs_register.TEMPMAIL_LOL_API_BASE = form.get("tempmail_lol_api_base", ncs_register.TEMPMAIL_LOL_API_BASE).strip().rstrip("/")
     ncs_register.LAMAIL_API_BASE = form.get("lamail_api_base", ncs_register.LAMAIL_API_BASE).strip().rstrip("/")
     ncs_register.LAMAIL_API_KEY = form.get("lamail_api_key", ncs_register.LAMAIL_API_KEY).strip()
@@ -372,6 +564,7 @@ def _register_worker(queue: Queue, *, proxy: Optional[str], total_accounts: int,
         with redirect_stdout(writer), redirect_stderr(writer):
             if config_overrides:
                 _apply_register_form_runtime(config_overrides)
+            _configure_fast_register_runtime()
             provider = ncs_register.MAIL_PROVIDER
             if run_preflight:
                 passed = ncs_register._quick_preflight(proxy=proxy, provider=provider)
@@ -389,6 +582,7 @@ def _register_worker(queue: Queue, *, proxy: Optional[str], total_accounts: int,
     except Exception as exc:
         error_text = f"{exc}\n{traceback.format_exc()}"
     finally:
+        writer.flush()
         queue.put(("done", success, error_text))
 
 
@@ -400,31 +594,55 @@ def _run_pay_job(*, pay_form: dict[str, str]) -> None:
         if not access_token:
             raise RuntimeError("缺少 access token")
 
+        matched_account = ACCOUNT_STORE.find_account_by_access_token(access_token)
+        account = dict(matched_account) if matched_account else {"email": "", "access_token": access_token}
+        account["access_token"] = access_token
+
         cfg = payment_bind_app.load_config()
         cfg.update(
             {
                 "proxy": pay_form.get("proxy", "").strip(),
+                "payment_generation_mode": payment_bind_app.normalize_payment_generation_mode(
+                    pay_form.get("payment_generation_mode")
+                ),
+                "payment_billing_name": str(pay_form.get("payment_billing_name") or "").strip(),
+                "payment_billing_email": str(pay_form.get("payment_billing_email") or "").strip(),
+                "payment_billing_line1": str(pay_form.get("payment_billing_line1") or "").strip(),
+                "payment_billing_city": str(pay_form.get("payment_billing_city") or "").strip(),
+                "payment_billing_state": str(pay_form.get("payment_billing_state") or "").strip(),
+                "payment_billing_postal_code": str(pay_form.get("payment_billing_postal_code") or "").strip(),
+                "payment_billing_country": str(pay_form.get("payment_billing_country") or cfg.get("payment_country") or "US").strip().upper(),
+                "payment_card_number": str(pay_form.get("payment_card_number") or "").strip(),
+                "payment_card_exp_month": str(pay_form.get("payment_card_exp_month") or "").strip(),
+                "payment_card_exp_year": str(pay_form.get("payment_card_exp_year") or "").strip(),
+                "payment_card_cvc": str(pay_form.get("payment_card_cvc") or "").strip(),
             }
         )
-        account = {
-            "email": "",
-            "access_token": access_token,
-        }
+        generation_mode = payment_bind_app.normalize_payment_generation_mode(cfg.get("payment_generation_mode"))
         binder = payment_bind_app.PaymentBinder(cfg, account)
-        checkout = binder.create_checkout()
+        checkout = binder.create_checkout(mode=generation_mode)
         checkout_url = str(checkout.get("checkout_url") or "").strip()
         stripe_hosted_url = str(checkout.get("stripe_hosted_url") or "").strip()
-        primary_url = stripe_hosted_url or checkout_url
+        primary_url = str(checkout.get("primary_url") or "").strip()
+        primary_label = str(checkout.get("primary_label") or ("Stripe Hosted 地址" if generation_mode == "stripe_hosted" else "Checkout 地址"))
         verification = {
             "required": bool(primary_url),
             "status": "awaiting_human_verification" if primary_url else "host_page_unavailable",
-            "reason": "stripe_hosted_page",
-            "message": "已生成支付链接，请在新页面完成验证。" if primary_url else "未生成可用的支付链接。",
+            "reason": "stripe_hosted_url" if generation_mode == "stripe_hosted" else "checkout_url",
+            "message": (
+                "已生成 Stripe Hosted 支付链接，请在新页面完成验证。"
+                if generation_mode == "stripe_hosted" and primary_url
+                else "已生成 checkout 地址，请在新页面完成验证。"
+                if primary_url else "未生成可用的支付链接。"
+            ),
             "verification_url": primary_url,
             "render_mode": "external_link",
         }
         result = {
-            "email": "",
+            "email": str(account.get("email") or ""),
+            "payment_generation_mode": generation_mode,
+            "primary_url": primary_url,
+            "primary_label": primary_label,
             "checkout_session_id": checkout.get("checkout_session_id") or "",
             "checkout": {
                 "checkout_session_id": checkout.get("checkout_session_id") or "",
@@ -441,11 +659,11 @@ def _run_pay_job(*, pay_form: dict[str, str]) -> None:
                 "setup_intent_id": "",
                 "setup_intent_client_secret": "",
                 "setup_intent_status": "",
-                "setup_intent_next_action": "hosted_page",
+                "setup_intent_next_action": "stripe_hosted" if generation_mode == "stripe_hosted" else "checkout_only",
                 "setup_intent_next_action_url": primary_url,
                 "requires_action": bool(primary_url),
                 "return_url": primary_url,
-                "final_state": "hosted_page_generated" if primary_url else "hosted_page_missing",
+                "final_state": "primary_url_generated" if primary_url else "primary_url_missing",
                 "final_message": verification["message"],
                 "is_success": False,
             },
@@ -453,6 +671,9 @@ def _run_pay_job(*, pay_form: dict[str, str]) -> None:
             "strip_host_page_url": stripe_hosted_url,
         }
         hosted_page = {
+            "mode": generation_mode,
+            "primary_label": primary_label,
+            "primary_url": primary_url,
             "checkout_session_id": str(checkout.get("checkout_session_id") or ""),
             "url": primary_url,
             "checkout_url": checkout_url,
@@ -629,9 +850,10 @@ def save_register_config(
     cpa_cleanup: str = Form("false"),
     cpa_upload_every_n: int = Form(1),
     run_preflight: str = Form("true"),
-    mail_provider: str = Form("duckmail"),
-    duckmail_api_base: str = Form(""),
-    duckmail_bearer: str = Form(""),
+    mail_provider: str = Form("outlookmail"),
+    outlookmail_config_path: str = Form(""),
+    outlookmail_profile: str = Form("auto"),
+    outlookmail_fetch_mode: str = Form("auto"),
     tempmail_lol_api_base: str = Form(""),
     lamail_api_base: str = Form(""),
     lamail_api_key: str = Form(""),
@@ -653,8 +875,9 @@ def save_register_config(
                 "cpa_upload_every_n": str(cpa_upload_every_n),
                 "run_preflight": run_preflight,
                 "mail_provider": mail_provider,
-                "duckmail_api_base": duckmail_api_base,
-                "duckmail_bearer": duckmail_bearer,
+                "outlookmail_config_path": outlookmail_config_path,
+                "outlookmail_profile": outlookmail_profile,
+                "outlookmail_fetch_mode": outlookmail_fetch_mode,
                 "tempmail_lol_api_base": tempmail_lol_api_base,
                 "lamail_api_base": lamail_api_base,
                 "lamail_api_key": lamail_api_key,
@@ -669,9 +892,10 @@ def save_register_config(
         )
         snapshot = dict(STATE.last_form)
         STATE.last_error = ""
-        STATE.last_output += "\n[WEB] 注册配置已保存\n"
     _save_register_config(snapshot)
     _reload_runtime_config()
+    _append_output("\n[WEB] 注册配置已保存\n")
+    _notify_status_update()
     return RedirectResponse(url="/?tab=register", status_code=303)
 
 
@@ -683,9 +907,10 @@ def start_register(
     cpa_cleanup: str = Form("false"),
     cpa_upload_every_n: int = Form(1),
     run_preflight: str = Form("true"),
-    mail_provider: str = Form("duckmail"),
-    duckmail_api_base: str = Form(""),
-    duckmail_bearer: str = Form(""),
+    mail_provider: str = Form("outlookmail"),
+    outlookmail_config_path: str = Form(""),
+    outlookmail_profile: str = Form("auto"),
+    outlookmail_fetch_mode: str = Form("auto"),
     tempmail_lol_api_base: str = Form(""),
     lamail_api_base: str = Form(""),
     lamail_api_key: str = Form(""),
@@ -705,8 +930,9 @@ def start_register(
         "cpa_upload_every_n": str(cpa_upload_every_n),
         "run_preflight": run_preflight,
         "mail_provider": mail_provider,
-        "duckmail_api_base": duckmail_api_base,
-        "duckmail_bearer": duckmail_bearer,
+        "outlookmail_config_path": outlookmail_config_path,
+        "outlookmail_profile": outlookmail_profile,
+        "outlookmail_fetch_mode": outlookmail_fetch_mode,
         "tempmail_lol_api_base": tempmail_lol_api_base,
         "lamail_api_base": lamail_api_base,
         "lamail_api_key": lamail_api_key,
@@ -757,6 +983,7 @@ def start_register(
         STATE.register_log_thread = threading.Thread(target=_watch_register_queue, args=(queue, process), daemon=True)
         STATE.register_log_thread.start()
 
+    _append_output("[WEB] 注册任务已启动，正在实时输出日志...\n")
     return RedirectResponse(url="/?tab=register", status_code=303)
 
 
@@ -783,18 +1010,45 @@ def stop_register_task():
 def save_pay_config(
     proxy: str = Form(""),
     payment_access_token: str = Form(""),
+    payment_generation_mode: str = Form(payment_bind_app.DEFAULT_PAYMENT_GENERATION_MODE),
+    payment_billing_name: str = Form(""),
+    payment_billing_email: str = Form(""),
+    payment_billing_line1: str = Form(""),
+    payment_billing_city: str = Form(""),
+    payment_billing_state: str = Form(""),
+    payment_billing_postal_code: str = Form(""),
+    payment_billing_country: str = Form("US"),
+    payment_card_number: str = Form(""),
+    payment_card_exp_month: str = Form(""),
+    payment_card_exp_year: str = Form(""),
+    payment_card_cvc: str = Form(""),
 ):
     pay_form = {
         "proxy": proxy,
         "payment_access_token": payment_access_token,
+        "payment_generation_mode": payment_bind_app.normalize_payment_generation_mode(payment_generation_mode),
+        "payment_billing_name": payment_billing_name,
+        "payment_billing_email": payment_billing_email,
+        "payment_billing_line1": payment_billing_line1,
+        "payment_billing_city": payment_billing_city,
+        "payment_billing_state": payment_billing_state,
+        "payment_billing_postal_code": payment_billing_postal_code,
+        "payment_billing_country": payment_billing_country,
+        "payment_card_number": payment_card_number,
+        "payment_card_exp_month": payment_card_exp_month,
+        "payment_card_exp_year": payment_card_exp_year,
+        "payment_card_cvc": payment_card_cvc,
     }
+    hydrated_form, matched_email = _merge_pay_form_with_account_profile(pay_form)
     with STATE.lock:
-        STATE.last_pay_form.update(pay_form)
+        STATE.last_pay_form.update(hydrated_form)
         snapshot = dict(STATE.last_pay_form)
         STATE.last_error = ""
     _append_output("\n[WEB] Pay 配置已保存\n")
     _notify_status_update()
     _save_pay_config(snapshot)
+    if matched_email:
+        _save_pay_profile_for_account(matched_email, snapshot)
     _reload_runtime_config()
     return RedirectResponse(url="/?tab=pay", status_code=303)
 
@@ -803,16 +1057,41 @@ def save_pay_config(
 def start_pay(
     proxy: str = Form(""),
     payment_access_token: str = Form(""),
+    payment_generation_mode: str = Form(payment_bind_app.DEFAULT_PAYMENT_GENERATION_MODE),
+    payment_billing_name: str = Form(""),
+    payment_billing_email: str = Form(""),
+    payment_billing_line1: str = Form(""),
+    payment_billing_city: str = Form(""),
+    payment_billing_state: str = Form(""),
+    payment_billing_postal_code: str = Form(""),
+    payment_billing_country: str = Form("US"),
+    payment_card_number: str = Form(""),
+    payment_card_exp_month: str = Form(""),
+    payment_card_exp_year: str = Form(""),
+    payment_card_cvc: str = Form(""),
 ):
     pay_form = {
         "proxy": proxy,
         "payment_access_token": payment_access_token,
+        "payment_generation_mode": payment_bind_app.normalize_payment_generation_mode(payment_generation_mode),
+        "payment_billing_name": payment_billing_name,
+        "payment_billing_email": payment_billing_email,
+        "payment_billing_line1": payment_billing_line1,
+        "payment_billing_city": payment_billing_city,
+        "payment_billing_state": payment_billing_state,
+        "payment_billing_postal_code": payment_billing_postal_code,
+        "payment_billing_country": payment_billing_country,
+        "payment_card_number": payment_card_number,
+        "payment_card_exp_month": payment_card_exp_month,
+        "payment_card_exp_year": payment_card_exp_year,
+        "payment_card_cvc": payment_card_cvc,
     }
+    hydrated_form, matched_email = _merge_pay_form_with_account_profile(pay_form)
 
     with STATE.lock:
         if STATE.running:
             STATE.last_error = "当前已有任务在执行，请等待完成后再启动新任务"
-            STATE.last_pay_form.update(pay_form)
+            STATE.last_pay_form.update(hydrated_form)
             _notify_status_update()
             return RedirectResponse(url="/?tab=pay", status_code=303)
         STATE.running = True
@@ -824,10 +1103,14 @@ def start_pay(
         STATE.pay_verification = {}
         STATE.pay_hosted_page = {}
         STATE.log_version += 1
-        STATE.last_pay_form.update(pay_form)
+        STATE.last_pay_form.update(hydrated_form)
+        job_form = dict(STATE.last_pay_form)
     _notify_status_update()
 
-    thread = threading.Thread(target=_run_pay_job, kwargs={"pay_form": dict(STATE.last_pay_form)}, daemon=True)
+    if matched_email:
+        _save_pay_profile_for_account(matched_email, job_form)
+
+    thread = threading.Thread(target=_run_pay_job, kwargs={"pay_form": job_form}, daemon=True)
     with STATE.lock:
         STATE.pay_thread = thread
     thread.start()
@@ -860,11 +1143,9 @@ def continue_pay_verification():
             return JSONResponse({"ok": False, "message": "当前没有待处理的人工验证任务"}, status_code=400)
         access_token = str(STATE.last_pay_form.get("payment_access_token") or "").strip()
         matched_email = ""
-        if access_token:
-            for row in ACCOUNT_STORE.list_accounts():
-                if str(row.get("access_token") or "").strip() == access_token:
-                    matched_email = str(row.get("email") or "").strip()
-                    break
+        matched_account = ACCOUNT_STORE.find_account_by_access_token(access_token)
+        if matched_account:
+            matched_email = str(matched_account.get("email") or "").strip()
         if matched_email:
             ACCOUNT_STORE.mark_account_team_enabled(matched_email)
             result["team_tagged_email"] = matched_email

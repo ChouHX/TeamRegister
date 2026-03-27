@@ -39,10 +39,44 @@ DEFAULT_PAYMENT_CHECKOUT_UI_MODE = "custom"
 DEFAULT_PAYMENT_REFERRER = "https://chatgpt.com/"
 
 
+DEFAULT_PAYMENT_GENERATION_MODE = "checkout_only"
+PAYMENT_PROFILE_FIELDS = (
+    "payment_billing_name",
+    "payment_billing_email",
+    "payment_billing_line1",
+    "payment_billing_city",
+    "payment_billing_state",
+    "payment_billing_postal_code",
+    "payment_billing_country",
+    "payment_card_number",
+    "payment_card_exp_month",
+    "payment_card_exp_year",
+    "payment_card_cvc",
+)
+PAYMENT_HOSTED_REQUIRED_FIELDS = (
+    "payment_billing_line1",
+    "payment_billing_city",
+    "payment_billing_postal_code",
+    "payment_billing_country",
+)
+
+
 def load_config() -> dict[str, Any]:
     defaults = {
         "proxy": "http://127.0.0.1:7890",
         "payment_country": "US",
+        "payment_generation_mode": DEFAULT_PAYMENT_GENERATION_MODE,
+        "payment_billing_name": "",
+        "payment_billing_email": "",
+        "payment_billing_line1": "",
+        "payment_billing_city": "",
+        "payment_billing_state": "",
+        "payment_billing_postal_code": "",
+        "payment_billing_country": "US",
+        "payment_card_number": "",
+        "payment_card_exp_month": "",
+        "payment_card_exp_year": "",
+        "payment_card_cvc": "",
         "payment_user_agent_override": "",
         "payment_time_on_page_min_ms": 15000,
         "payment_time_on_page_max_ms": 45000,
@@ -64,6 +98,13 @@ def mask_card(number: str) -> str:
     if len(digits) < 8:
         return digits
     return f"{digits[:6]}{'*' * max(0, len(digits) - 10)}{digits[-4:]}"
+
+
+def normalize_payment_generation_mode(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"stripe_hosted", "stripehost", "hosted", "host_page", "host_page_only"}:
+        return "stripe_hosted"
+    return DEFAULT_PAYMENT_GENERATION_MODE
 
 
 def flatten_form_data(data: Any, prefix: str = "") -> list[tuple[str, str]]:
@@ -199,8 +240,17 @@ def choose_account_email() -> str:
 
 class PaymentBinder:
     def __init__(self, config: dict[str, Any], account: dict[str, Any]):
-        self.config = config
+        self.config = dict(config)
         self.account = account
+        self.payment_profile = account.get("payment_profile") if isinstance(account.get("payment_profile"), dict) else {}
+        for field in PAYMENT_PROFILE_FIELDS:
+            current = str(self.config.get(field) or "").strip()
+            stored = str(self.payment_profile.get(field) or "").strip()
+            if not current and stored:
+                self.config[field] = stored
+        self.config["payment_generation_mode"] = normalize_payment_generation_mode(
+            self.config.get("payment_generation_mode")
+        )
         self.session = curl_requests.Session(impersonate="chrome136")
         self.stripe_session = curl_requests.Session(impersonate="chrome136")
         self.proxy = str(config.get("proxy") or "").strip()
@@ -231,6 +281,26 @@ class PaymentBinder:
 
     def log(self, message: str) -> None:
         print(f"[bind] {message}")
+
+    def _payment_mode(self, mode: Optional[str] = None) -> str:
+        return normalize_payment_generation_mode(mode or self.config.get("payment_generation_mode"))
+
+    def _billing_value(self, key: str, fallback: str = "") -> str:
+        value = str(self.config.get(key) or "").strip()
+        return value or str(fallback or "").strip()
+
+    def _missing_hosted_billing_fields(self) -> list[str]:
+        field_labels = {
+            "payment_billing_line1": "账单地址",
+            "payment_billing_city": "城市",
+            "payment_billing_postal_code": "邮编",
+            "payment_billing_country": "国家",
+        }
+        missing: list[str] = []
+        for field in PAYMENT_HOSTED_REQUIRED_FIELDS:
+            if not self._billing_value(field):
+                missing.append(field_labels.get(field, field))
+        return missing
 
     def _seed_cookie(self, name: str, value: str) -> None:
         cookie_name = str(name or "").strip()
@@ -747,13 +817,13 @@ class PaymentBinder:
 
     def init_stripe_hosted_page(self, checkout_session_id: str, publishable_key: str) -> dict[str, Any]:
         stripe_version = "2025-03-31.basil; checkout_server_update_beta=v1; checkout_manual_approval_preview=v1"
-        billing_email = str(self.config.get("payment_billing_email") or self.account.get("email") or "").strip()
-        billing_name = str(self.config.get("payment_billing_name") or self.account.get("email") or "OpenAI User").strip()
-        billing_country = str(self.config.get("payment_billing_country") or self.config.get("payment_country") or "US").strip().upper()
-        billing_line1 = str(self.config.get("payment_billing_line1") or "").strip()
-        billing_city = str(self.config.get("payment_billing_city") or "").strip()
-        billing_state = str(self.config.get("payment_billing_state") or "").strip()
-        billing_postal_code = str(self.config.get("payment_billing_postal_code") or "").strip()
+        billing_email = self._billing_value("payment_billing_email", str(self.account.get("email") or ""))
+        billing_name = self._billing_value("payment_billing_name", str(self.account.get("email") or "OpenAI User"))
+        billing_country = self._billing_value("payment_billing_country", str(self.config.get("payment_country") or "US")).upper()
+        billing_line1 = self._billing_value("payment_billing_line1")
+        billing_city = self._billing_value("payment_billing_city")
+        billing_state = self._billing_value("payment_billing_state")
+        billing_postal_code = self._billing_value("payment_billing_postal_code")
         data = {
             "browser_locale": "zh-CN",
             "browser_timezone": "Asia/Tokyo",
@@ -801,8 +871,9 @@ class PaymentBinder:
             return payload
         return payload if isinstance(payload, dict) else {}
 
-    def create_checkout(self) -> dict[str, Any]:
-        self.log("开始创建 checkout session")
+    def create_checkout(self, mode: str | None = None) -> dict[str, Any]:
+        generation_mode = self._payment_mode(mode)
+        self.log(f"开始创建 checkout session: mode={generation_mode}")
         ctx = self._payment_context()
         payment_country = str(self.config.get("payment_country", "US") or "US").upper()
         payload = {
@@ -871,11 +942,25 @@ class PaymentBinder:
         self.log(f"生成 checkout_url: {checkout_url}")
 
         stripe_hosted_url = ""
-        if self.stripe_publishable_key:
+        if generation_mode == "stripe_hosted":
+            missing_fields = self._missing_hosted_billing_fields()
+            if missing_fields:
+                raise RuntimeError(f"Stripe Hosted 模式缺少账单信息: {', '.join(missing_fields)}")
+            if not self.stripe_publishable_key:
+                raise RuntimeError("Stripe Hosted 模式缺少 publishable key，无法初始化 hosted page")
             init_payload = self.init_stripe_hosted_page(checkout_session_id, self.stripe_publishable_key)
             stripe_hosted_url = str(init_payload.get("stripe_hosted_url") or "").strip()
             if stripe_hosted_url and expected_amount is None:
                 expected_amount = self._extract_expected_amount(init_payload)
+            if not stripe_hosted_url:
+                preview = str(init_payload.get("body_preview") or "").strip()
+                if preview:
+                    raise RuntimeError(f"已携带账单信息，但未获取到 stripe hosted 链接: {preview[:180]}")
+                raise RuntimeError("已携带账单信息，但未获取到 stripe hosted 链接")
+            self.log(f"生成 stripe_hosted_url: {stripe_hosted_url}")
+
+        primary_url = stripe_hosted_url if generation_mode == "stripe_hosted" else checkout_url
+        primary_label = "Stripe Hosted 地址" if generation_mode == "stripe_hosted" else "Checkout 地址"
 
         return {
             "checkout_session_id": checkout_session_id,
@@ -884,6 +969,9 @@ class PaymentBinder:
             "expected_amount": expected_amount,
             "checkout_url": checkout_url,
             "stripe_hosted_url": stripe_hosted_url,
+            "payment_generation_mode": generation_mode,
+            "primary_url": primary_url,
+            "primary_label": primary_label,
             "raw": data,
         }
 

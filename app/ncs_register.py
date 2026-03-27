@@ -1,8 +1,10 @@
 """
-ChatGPT 批量自动注册工具 (并发版) - 支持 DuckMail / TempMail.lol / LaMail / CF 自建邮箱
+ChatGPT 批量自动注册工具 (并发版) - 支持 OutlookMail / TempMail.lol / LaMail / CF 自建邮箱
 依赖: pip install curl_cffi
 """
 
+import email
+import imaplib
 import os
 import re
 import uuid
@@ -22,6 +24,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qs, urlencode
 from dataclasses import dataclass
+from email.header import decode_header
 from typing import Any, Dict, Optional
 
 from curl_cffi import requests as curl_requests
@@ -32,11 +35,12 @@ from app.account_store import AccountStore
 def _load_config():
     config = {
         "total_accounts": 3,
-        "mail_provider": "duckmail",
+        "mail_provider": "outlookmail",
+        "outlookmail_config_path": "outlookmail_accounts.txt",
+        "outlookmail_profile": "auto",
+        "outlookmail_fetch_mode": "auto",
         "cfmail_config_path": "zhuce5_cfmail_accounts.json",
         "cfmail_profile": "auto",
-        "duckmail_api_base": "https://api.duckmail.sbs",
-        "duckmail_bearer": "",
         "tempmail_lol_api_base": "https://api.tempmail.lol/v2",
         "lamail_api_base": "https://maliapi.215.im/v1",
         "lamail_api_key": "",
@@ -58,7 +62,7 @@ def _load_config():
         "cpa_upload_every_n": 3,
         "register_delay_factor": 1.0,
         "otp_poll_interval_default": 2.0,
-        "otp_poll_interval_duckmail": 2.0,
+        "otp_poll_interval_outlookmail": 2.0,
         "otp_poll_interval_tempmail_lol": 1.5,
         "otp_poll_interval_lamail": 1.0,
         "otp_poll_interval_cfmail": 1.5,
@@ -121,9 +125,15 @@ def _as_csv_list(value: Any) -> list[str]:
     return [str(item).strip() for item in items if str(item).strip()]
 
 
+def _normalize_outlookmail_fetch_mode(value: Any) -> str:
+    mode = str(value or "auto").strip().lower()
+    return mode if mode in {"auto", "graph", "imap"} else "auto"
+
+
 _CONFIG = _load_config()
-DUCKMAIL_API_BASE = _CONFIG["duckmail_api_base"]
-DUCKMAIL_BEARER = _CONFIG["duckmail_bearer"]
+OUTLOOKMAIL_CONFIG_PATH = str(_CONFIG.get("outlookmail_config_path", "outlookmail_accounts.txt") or "").strip()
+OUTLOOKMAIL_PROFILE_MODE = str(_CONFIG.get("outlookmail_profile", "auto") or "auto").strip() or "auto"
+OUTLOOKMAIL_FETCH_MODE = _normalize_outlookmail_fetch_mode(_CONFIG.get("outlookmail_fetch_mode", "auto"))
 TEMPMAIL_LOL_API_BASE = _CONFIG.get("tempmail_lol_api_base", "https://api.tempmail.lol/v2").rstrip("/")
 LAMAIL_API_BASE = _CONFIG.get("lamail_api_base", "https://maliapi.215.im/v1").rstrip("/")
 LAMAIL_API_KEY = str(_CONFIG.get("lamail_api_key", "") or "").strip()
@@ -145,11 +155,11 @@ UPLOAD_API_TOKEN = _CONFIG["upload_api_token"]
 UPLOAD_API_PROXY = str(_CONFIG.get("upload_api_proxy", "") or "").strip()
 CPA_CLEANUP_ENABLED = _as_bool(_CONFIG.get("cpa_cleanup_enabled", True))
 CPA_UPLOAD_EVERY_N = max(1, int(_CONFIG.get("cpa_upload_every_n", 3) or 3))
-MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "duckmail")).strip().lower()
+MAIL_PROVIDER = str(_CONFIG.get("mail_provider", "outlookmail")).strip().lower()
 REGISTER_DELAY_FACTOR = max(0.0, float(_CONFIG.get("register_delay_factor", 1.0) or 1.0))
 OTP_POLL_INTERVAL_DEFAULT = max(0.2, float(_CONFIG.get("otp_poll_interval_default", 2.0) or 2.0))
 OTP_POLL_INTERVAL_BY_PROVIDER = {
-    "duckmail": max(0.2, float(_CONFIG.get("otp_poll_interval_duckmail", OTP_POLL_INTERVAL_DEFAULT) or OTP_POLL_INTERVAL_DEFAULT)),
+    "outlookmail": max(0.2, float(_CONFIG.get("otp_poll_interval_outlookmail", OTP_POLL_INTERVAL_DEFAULT) or OTP_POLL_INTERVAL_DEFAULT)),
     "tempmail_lol": max(0.2, float(_CONFIG.get("otp_poll_interval_tempmail_lol", 1.5) or 1.5)),
     "lamail": max(0.2, float(_CONFIG.get("otp_poll_interval_lamail", 1.0) or 1.0)),
     "cfmail": max(0.2, float(_CONFIG.get("otp_poll_interval_cfmail", 1.5) or 1.5)),
@@ -275,6 +285,235 @@ def _print_with_progress(*args, **kwargs):
 
 # 全局接管 print，保证日志输出后能恢复底部进度条
 builtins.print = _print_with_progress
+
+
+# ================= OutlookMail 邮箱池支持 =================
+
+OUTLOOKMAIL_TOKEN_URL_GRAPH = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+OUTLOOKMAIL_TOKEN_URL_IMAP = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+OUTLOOKMAIL_IMAP_SERVER = "outlook.live.com"
+OUTLOOKMAIL_IMAP_PORT = 993
+OUTLOOKMAIL_JUNK_CHECK_DELAY_SECONDS = 20.0
+OUTLOOKMAIL_IMAP_JUNK_FOLDERS = [
+    '"Junk Email"',
+    '"Junk"',
+    '"Spam"',
+    '"Bulk Mail"',
+    '"垃圾邮件"',
+    '"骚扰邮件"',
+]
+
+
+@dataclass(frozen=True)
+class OutlookMailAccount:
+    name: str
+    email: str
+    password: str
+    client_id: str
+    refresh_token: str
+
+
+def _normalize_outlookmail_account(raw: Dict[str, Any]) -> Optional[OutlookMailAccount]:
+    if not isinstance(raw, dict):
+        return None
+    if not raw.get("enabled", True):
+        return None
+    email_addr = str(raw.get("email") or raw.get("address") or "").strip()
+    password = str(raw.get("password") or "").strip()
+    client_id = str(raw.get("client_id") or raw.get("clientId") or "").strip()
+    refresh_token = str(raw.get("refresh_token") or raw.get("refreshToken") or "").strip()
+    name = str(raw.get("name") or email_addr).strip()
+    if not email_addr or not client_id or not refresh_token:
+        return None
+    return OutlookMailAccount(
+        name=name,
+        email=email_addr,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+    )
+
+
+def _parse_outlookmail_account_line(line: str) -> Optional[OutlookMailAccount]:
+    text = str(line or "").strip()
+    if not text or text.startswith("#"):
+        return None
+    parts = text.split("----")
+    if len(parts) < 4:
+        return None
+    email_addr = str(parts[0] or "").strip()
+    password = str(parts[1] or "").strip()
+    client_id = str(parts[2] or "").strip()
+    refresh_token = str(parts[3] or "").strip()
+    if not email_addr or not client_id or not refresh_token:
+        return None
+    return OutlookMailAccount(
+        name=email_addr,
+        email=email_addr,
+        password=password,
+        client_id=client_id,
+        refresh_token=refresh_token,
+    )
+
+
+def _load_outlookmail_accounts_from_file(config_path: str, *, silent: bool = False) -> list:
+    path = str(config_path or "").strip()
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
+    except Exception as e:
+        if not silent:
+            print(f"[警告] 读取 outlookmail 配置文件失败: {path}，错误: {e}")
+        return []
+
+    stripped = raw_text.lstrip()
+    if not stripped:
+        return []
+
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data = json.loads(raw_text)
+        except Exception as e:
+            if not silent:
+                print(f"[警告] 解析 outlookmail JSON 配置失败: {path}，错误: {e}")
+            return []
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            accounts = data.get("accounts")
+            if isinstance(accounts, list):
+                return accounts
+        if not silent:
+            print(f"[警告] outlookmail 配置文件格式无效: {path}")
+        return []
+
+    accounts = []
+    for raw_line in raw_text.splitlines():
+        account = _parse_outlookmail_account_line(raw_line)
+        if not account:
+            continue
+        accounts.append(
+            {
+                "name": account.name,
+                "email": account.email,
+                "password": account.password,
+                "client_id": account.client_id,
+                "refresh_token": account.refresh_token,
+                "enabled": True,
+            }
+        )
+    return accounts
+
+
+def _build_outlookmail_accounts(raw_accounts: list) -> list:
+    accounts = []
+    seen_emails = set()
+    for item in raw_accounts:
+        account = _normalize_outlookmail_account(item)
+        if not account:
+            continue
+        key = account.email.lower()
+        if key in seen_emails:
+            continue
+        seen_emails.add(key)
+        accounts.append(account)
+    return accounts
+
+
+_outlookmail_account_lock = threading.Lock()
+_outlookmail_account_index = 0
+_outlookmail_reload_lock = threading.Lock()
+_outlookmail_skip_lock = threading.Lock()
+
+OUTLOOKMAIL_ACCOUNTS: list = _build_outlookmail_accounts(
+    _load_outlookmail_accounts_from_file(OUTLOOKMAIL_CONFIG_PATH, silent=True)
+)
+OUTLOOKMAIL_HOT_RELOAD_ENABLED = True
+OUTLOOKMAIL_CONFIG_MTIME = (
+    os.path.getmtime(OUTLOOKMAIL_CONFIG_PATH) if os.path.exists(OUTLOOKMAIL_CONFIG_PATH) else None
+)
+
+
+def _reload_outlookmail_accounts_if_needed(force: bool = False) -> bool:
+    global OUTLOOKMAIL_CONFIG_MTIME, OUTLOOKMAIL_ACCOUNTS, _outlookmail_account_index
+    if not OUTLOOKMAIL_HOT_RELOAD_ENABLED:
+        return False
+    config_path = OUTLOOKMAIL_CONFIG_PATH
+    if not config_path:
+        return False
+    try:
+        mtime = os.path.getmtime(config_path)
+    except OSError:
+        return False
+    with _outlookmail_reload_lock:
+        if not force and OUTLOOKMAIL_CONFIG_MTIME == mtime:
+            return False
+        raw_accounts = _load_outlookmail_accounts_from_file(config_path)
+        new_accounts = _build_outlookmail_accounts(raw_accounts)
+        if not new_accounts:
+            OUTLOOKMAIL_CONFIG_MTIME = mtime
+            return False
+        OUTLOOKMAIL_ACCOUNTS = new_accounts
+        _outlookmail_account_index = 0
+        OUTLOOKMAIL_CONFIG_MTIME = mtime
+        return True
+
+
+def _is_outlookmail_skipped(email_addr: str) -> bool:
+    key = str(email_addr or "").strip().lower()
+    if not key:
+        return False
+    with _outlookmail_skip_lock:
+        return key in getattr(sys.modules[__name__], "OUTLOOKMAIL_SKIPPED_EMAILS", set())
+
+
+OUTLOOKMAIL_SKIPPED_EMAILS: set[str] = set()
+
+
+def _mark_outlookmail_skipped(email_addr: str, reason: str = "") -> None:
+    key = str(email_addr or "").strip().lower()
+    if not key:
+        return
+    with _outlookmail_skip_lock:
+        OUTLOOKMAIL_SKIPPED_EMAILS.add(key)
+    if reason:
+        print(f"[警告] 已跳过 Outlook 邮箱 {email_addr}: {reason}")
+
+
+
+def _is_outlookmail_username_registration_error(error_text: str) -> bool:
+    text = str(error_text or "").lower()
+    if "failed to register username" in text:
+        return True
+    return ("register 失败 (400)" in text or "bad_request" in text) and "username" in text
+
+
+
+def _select_outlookmail_account(profile_name: str = "auto") -> Optional[OutlookMailAccount]:
+    global _outlookmail_account_index
+    accounts = OUTLOOKMAIL_ACCOUNTS
+    if not accounts:
+        return None
+
+    selected_name = str(profile_name or "auto").strip()
+    if selected_name and selected_name.lower() != "auto":
+        for account in accounts:
+            if account.name.lower() == selected_name.lower() or account.email.lower() == selected_name.lower():
+                return account
+        return None
+
+    with _outlookmail_account_lock:
+        start_index = _outlookmail_account_index % len(accounts)
+        for offset in range(len(accounts)):
+            index = (start_index + offset) % len(accounts)
+            account = accounts[index]
+            if _is_outlookmail_skipped(account.email):
+                continue
+            _outlookmail_account_index = (index + 1) % len(accounts)
+            return account
+    return None
 
 
 # ================= CF 自建邮箱 (cfmail) 支持 =================
@@ -1344,74 +1583,59 @@ def _generate_password(length=14):
     return "".join(pwd)
 
 
-# ================= DuckMail 邮箱函数 =================
-
-def _create_duckmail_session():
-    session = curl_requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    })
-    return session
+# ================= 邮件验证码工具函数 =================
 
 
-def create_temp_email():
-    if not DUCKMAIL_BEARER:
-        raise Exception("DUCKMAIL_BEARER 未设置，无法创建临时邮箱")
-    chars = string.ascii_lowercase + string.digits
-    length = random.randint(8, 13)
-    email_local = "".join(random.choice(chars) for _ in range(length))
-    email = f"{email_local}@duckmail.sbs"
-    password = _generate_password()
-    api_base = DUCKMAIL_API_BASE.rstrip("/")
-    headers = {"Authorization": f"Bearer {DUCKMAIL_BEARER}"}
-    session = _create_duckmail_session()
+def _decode_header_value(header_value: str) -> str:
+    if not header_value:
+        return ""
     try:
-        res = session.post(f"{api_base}/accounts", json={"address": email, "password": password},
-                           headers=headers, timeout=15, impersonate="chrome131")
-        if res.status_code not in [200, 201]:
-            raise Exception(f"创建邮箱失败: {res.status_code} - {res.text[:200]}")
-        time.sleep(0.5)
-        token_res = session.post(f"{api_base}/token",
-                                  json={"address": email, "password": password},
-                                  timeout=15, impersonate="chrome131")
-        if token_res.status_code == 200:
-            mail_token = token_res.json().get("token")
-            if mail_token:
-                return email, password, mail_token
-        raise Exception(f"获取邮件 Token 失败: {token_res.status_code}")
-    except Exception as e:
-        raise Exception(f"DuckMail 创建邮箱失败: {e}")
-
-
-def _fetch_emails_duckmail(mail_token: str):
-    try:
-        api_base = DUCKMAIL_API_BASE.rstrip("/")
-        headers = {"Authorization": f"Bearer {mail_token}"}
-        session = _create_duckmail_session()
-        res = session.get(f"{api_base}/messages", headers=headers, timeout=15, impersonate="chrome131")
-        if res.status_code == 200:
-            data = res.json()
-            return data.get("hydra:member") or data.get("member") or data.get("data") or []
-        return []
+        decoded_parts = decode_header(str(header_value))
+        decoded_string = ""
+        for part, charset in decoded_parts:
+            if isinstance(part, bytes):
+                try:
+                    decoded_string += part.decode(charset if charset else "utf-8", "replace")
+                except Exception:
+                    decoded_string += part.decode("utf-8", "replace")
+            else:
+                decoded_string += str(part)
+        return decoded_string
     except Exception:
-        return []
+        return str(header_value) if header_value else ""
 
 
-def _fetch_email_detail_duckmail(mail_token: str, msg_id: str):
-    try:
-        api_base = DUCKMAIL_API_BASE.rstrip("/")
-        headers = {"Authorization": f"Bearer {mail_token}"}
-        session = _create_duckmail_session()
-        if isinstance(msg_id, str) and msg_id.startswith("/messages/"):
-            msg_id = msg_id.split("/")[-1]
-        res = session.get(f"{api_base}/messages/{msg_id}", headers=headers, timeout=15, impersonate="chrome131")
-        if res.status_code == 200:
-            return res.json()
-    except Exception:
-        pass
-    return None
+
+def _extract_email_body(msg) -> str:
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition", ""))
+            if content_type == "text/plain" and "attachment" not in content_disposition:
+                try:
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or "utf-8"
+                    body = payload.decode(charset, errors="replace")
+                    break
+                except Exception:
+                    continue
+            elif content_type == "text/html" and "attachment" not in content_disposition and not body:
+                try:
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or "utf-8"
+                    body = payload.decode(charset, errors="replace")
+                except Exception:
+                    continue
+    else:
+        try:
+            payload = msg.get_payload(decode=True)
+            charset = msg.get_content_charset() or "utf-8"
+            body = payload.decode(charset, errors="replace")
+        except Exception:
+            body = str(msg.get_payload())
+    return body
+
 
 
 def _extract_verification_code(email_content: str):
@@ -1434,22 +1658,8 @@ def _extract_verification_code(email_content: str):
     return None
 
 
-def wait_for_verification_email(mail_token: str, timeout: int = 120):
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        messages = _fetch_emails_duckmail(mail_token)
-        if messages:
-            first_msg = messages[0]
-            msg_id = first_msg.get("id") or first_msg.get("@id")
-            if msg_id:
-                detail = _fetch_email_detail_duckmail(mail_token, msg_id)
-                if detail:
-                    content = detail.get("text") or detail.get("html") or ""
-                    code = _extract_verification_code(content)
-                    if code:
-                        return code
-        time.sleep(3)
-    return None
+def _should_retry_outlookmail_with_junk(elapsed_seconds: float) -> bool:
+    return float(elapsed_seconds or 0.0) >= OUTLOOKMAIL_JUNK_CHECK_DELAY_SECONDS
 
 
 def _random_name():
@@ -1475,7 +1685,7 @@ def _random_birthdate():
     return f"{y}-{m:02d}-{d:02d}"
 
 
-def _quick_preflight(proxy: str = None, provider: str = "duckmail") -> bool:
+def _quick_preflight(proxy: str = None, provider: str = "outlookmail") -> bool:
     """启动前连通性检查，避免跑到中途才发现被拦截。"""
     print("\n[Preflight] 开始连通性检查...")
     sess = curl_requests.Session(impersonate="chrome131")
@@ -1519,7 +1729,14 @@ def _quick_preflight(proxy: str = None, provider: str = "duckmail") -> bool:
     except Exception as e:
         _record("auth.openai.com", False, f"异常: {e}")
 
-    # 4) TempMail.lol 可达性（仅 tempmail_lol 时检查）
+    # 4) Outlook 邮箱池配置（仅 outlookmail 时检查）
+    if provider == "outlookmail":
+        _reload_outlookmail_accounts_if_needed()
+        loaded = len(OUTLOOKMAIL_ACCOUNTS)
+        ok = loaded > 0
+        _record("outlookmail accounts", ok, f"loaded={loaded}, mode={OUTLOOKMAIL_FETCH_MODE}, profile={OUTLOOKMAIL_PROFILE_MODE}")
+
+    # 5) TempMail.lol 可达性（仅 tempmail_lol 时检查）
     if provider == "tempmail_lol":
         try:
             r = sess.get(f"{TEMPMAIL_LOL_API_BASE}/", timeout=20, allow_redirects=True)
@@ -1528,7 +1745,7 @@ def _quick_preflight(proxy: str = None, provider: str = "duckmail") -> bool:
         except Exception as e:
             _record("tempmail.lol api", False, f"异常: {e}")
 
-    # 5) LaMail 可达性（仅 lamail 时检查）
+    # 6) LaMail 可达性（仅 lamail 时检查）
     if provider == "lamail":
         try:
             r = sess.get(f"{LAMAIL_API_BASE}/domains", timeout=20, allow_redirects=True)
@@ -1577,7 +1794,8 @@ class ChatGPTRegister:
         self.session.cookies.set("oai-did", self.device_id, domain="chatgpt.com")
         self._callback_url = None
 
-        # cfmail 状态（仅在使用 cfmail 时填充）
+        # outlookmail / cfmail 状态
+        self._outlookmail_account: Optional[OutlookMailAccount] = None
         self._cfmail_api_base = ""
         self._cfmail_account_name = ""
         self._cfmail_mail_token = ""
@@ -1604,96 +1822,311 @@ class ChatGPTRegister:
         with _print_lock:
             print(f"{prefix}{msg}")
 
-    # ==================== DuckMail ====================
-
-    def _create_duckmail_session(self):
-        session = curl_requests.Session()
-        session.headers.update({
-            "User-Agent": self.ua,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        })
+    def _clone_session(self, source_session):
+        cloned = curl_requests.Session(impersonate=self.impersonate)
         if self.proxy:
-            session.proxies = {"http": self.proxy, "https": self.proxy}
-        return session
-
-    def create_temp_email(self):
-        """创建 DuckMail 临时邮箱，返回 (email, password, mail_token)"""
-        if not DUCKMAIL_BEARER:
-            raise Exception("DUCKMAIL_BEARER 未设置，无法创建临时邮箱")
-        chars = string.ascii_lowercase + string.digits
-        length = random.randint(8, 13)
-        email_local = "".join(random.choice(chars) for _ in range(length))
-        email = f"{email_local}@duckmail.sbs"
-        password = _generate_password()
-        api_base = DUCKMAIL_API_BASE.rstrip("/")
-        headers = {"Authorization": f"Bearer {DUCKMAIL_BEARER}"}
-        session = self._create_duckmail_session()
+            cloned.proxies = {"http": self.proxy, "https": self.proxy}
         try:
-            res = session.post(f"{api_base}/accounts",
-                               json={"address": email, "password": password},
-                               headers=headers, timeout=15, impersonate=self.impersonate)
-            if res.status_code not in [200, 201]:
-                raise Exception(f"创建邮箱失败: {res.status_code} - {res.text[:200]}")
-            time.sleep(0.5)
-            token_res = session.post(f"{api_base}/token",
-                                     json={"address": email, "password": password},
-                                     timeout=15, impersonate=self.impersonate)
-            if token_res.status_code == 200:
-                mail_token = token_res.json().get("token")
-                if mail_token:
-                    return email, password, mail_token
-            raise Exception(f"获取邮件 Token 失败: {token_res.status_code}")
-        except Exception as e:
-            raise Exception(f"DuckMail 创建邮箱失败: {e}")
-
-    def _fetch_emails_duckmail(self, mail_token: str):
-        try:
-            api_base = DUCKMAIL_API_BASE.rstrip("/")
-            headers = {"Authorization": f"Bearer {mail_token}"}
-            session = self._create_duckmail_session()
-            res = session.get(f"{api_base}/messages", headers=headers,
-                              timeout=15, impersonate=self.impersonate)
-            if res.status_code == 200:
-                data = res.json()
-                return data.get("hydra:member") or data.get("member") or data.get("data") or []
-            return []
-        except Exception:
-            return []
-
-    def _fetch_email_detail_duckmail(self, mail_token: str, msg_id: str):
-        try:
-            api_base = DUCKMAIL_API_BASE.rstrip("/")
-            headers = {"Authorization": f"Bearer {mail_token}"}
-            session = self._create_duckmail_session()
-            if isinstance(msg_id, str) and msg_id.startswith("/messages/"):
-                msg_id = msg_id.split("/")[-1]
-            res = session.get(f"{api_base}/messages/{msg_id}", headers=headers,
-                              timeout=15, impersonate=self.impersonate)
-            if res.status_code == 200:
-                return res.json()
+            cloned.headers.update(dict(getattr(source_session, "headers", {}) or {}))
         except Exception:
             pass
-        return None
-
-    def _extract_verification_code(self, email_content: str):
-        if not email_content:
-            return None
-        patterns = [
-            r"Verification code:?\s*(\d{6})",
-            r"code is\s*(\d{6})",
-            r"代码为[:：]?\s*(\d{6})",
-            r"验证码[:：]?\s*(\d{6})",
-            r">\s*(\d{6})\s*<",
-            r"(?<![#&])\b(\d{6})\b",
-        ]
-        for pattern in patterns:
-            matches = re.findall(pattern, email_content, re.IGNORECASE)
-            for code in matches:
-                if code == "177010":
+        try:
+            for cookie in source_session.cookies.jar:
+                name = str(getattr(cookie, "name", "") or "")
+                value = str(getattr(cookie, "value", "") or "")
+                domain = str(getattr(cookie, "domain", "") or "")
+                path = str(getattr(cookie, "path", "/") or "/")
+                if not name:
                     continue
+                if domain:
+                    cloned.cookies.set(name, value, domain=domain, path=path)
+                else:
+                    cloned.cookies.set(name, value, path=path)
+        except Exception:
+            pass
+        return cloned
+
+    def _rebuild_transport_session(self):
+        self.session = self._clone_session(self.session)
+        return self.session
+
+    def _is_retryable_transport_error(self, exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        retry_markers = (
+            "curl: (35)",
+            "connection closed abruptly",
+            "unexpected eof",
+            "tlsv1 alert",
+            "ssl_connect_error",
+            "connection reset by peer",
+            "empty reply from server",
+            "recv failure",
+            "send failure",
+        )
+        return any(marker in text for marker in retry_markers)
+
+    def _request_with_retry(self, method: str, url: str, *, attempts: int = 3,
+                            rebuild_session_on_retry: bool = True, **kwargs):
+        attempts = max(1, int(attempts or 1))
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                request_fn = getattr(self.session, method.lower())
+                return request_fn(url, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts or not self._is_retryable_transport_error(exc):
+                    raise
+                path_hint = urlparse(url).path or url
+                self._print(f"[网络] {method.upper()} {path_hint} 连接被中断，准备重试 {attempt + 1}/{attempts}...")
+                if rebuild_session_on_retry:
+                    self._rebuild_transport_session()
+                _random_delay(0.8, 1.8)
+        raise last_exc
+
+    # ==================== OutlookMail ====================
+
+    def _outlookmail_proxies(self):
+        return {"http": self.proxy, "https": self.proxy} if self.proxy else None
+
+    def create_outlookmail_email(self):
+        """从 Outlook 邮箱池中选择一个账号，返回 (email, password_placeholder, mail_token)"""
+        _reload_outlookmail_accounts_if_needed()
+        account = _select_outlookmail_account(OUTLOOKMAIL_PROFILE_MODE)
+        if not account:
+            raise Exception(
+                f"没有可用的 outlookmail 配置，请检查 {OUTLOOKMAIL_CONFIG_PATH}；"
+                f"当前已加载配置数: {len(OUTLOOKMAIL_ACCOUNTS)}"
+            )
+        _mark_outlookmail_skipped(account.email)
+        self._outlookmail_account = account
+        self._print(f"[outlookmail] 使用邮箱池账号: {account.email} (配置: {account.name}, mode={OUTLOOKMAIL_FETCH_MODE})")
+        return account.email, "", account.refresh_token
+
+    def _get_access_token_outlookmail_graph(self) -> str:
+        account = self._outlookmail_account
+        if not account:
+            return ""
+        try:
+            resp = curl_requests.post(
+                OUTLOOKMAIL_TOKEN_URL_GRAPH,
+                data={
+                    "client_id": account.client_id,
+                    "grant_type": "refresh_token",
+                    "refresh_token": account.refresh_token,
+                    "scope": "https://graph.microsoft.com/.default",
+                },
+                proxies=self._outlookmail_proxies(),
+                timeout=30,
+                impersonate=self.impersonate,
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json() if resp.content else {}
+            return str(data.get("access_token") or "")
+        except Exception:
+            return ""
+
+    def _get_access_token_outlookmail_imap(self) -> str:
+        account = self._outlookmail_account
+        if not account:
+            return ""
+        try:
+            resp = curl_requests.post(
+                OUTLOOKMAIL_TOKEN_URL_IMAP,
+                data={
+                    "client_id": account.client_id,
+                    "grant_type": "refresh_token",
+                    "refresh_token": account.refresh_token,
+                    "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+                },
+                proxies=self._outlookmail_proxies(),
+                timeout=30,
+                impersonate=self.impersonate,
+            )
+            if resp.status_code != 200:
+                return ""
+            data = resp.json() if resp.content else {}
+            return str(data.get("access_token") or "")
+        except Exception:
+            return ""
+
+    def _fetch_email_detail_outlookmail_graph(self, message_id: str, access_token: str):
+        if not message_id or not access_token:
+            return None
+        try:
+            resp = curl_requests.get(
+                f"https://graph.microsoft.com/v1.0/me/messages/{message_id}",
+                params={
+                    "$select": "id,subject,from,toRecipients,receivedDateTime,body,bodyPreview",
+                },
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Prefer": "outlook.body-content-type='html'",
+                },
+                proxies=self._outlookmail_proxies(),
+                timeout=30,
+                impersonate=self.impersonate,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json() if resp.content else {}
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def _fetch_emails_outlookmail_graph(self, top: int = 10, include_junk: bool = False):
+        access_token = self._get_access_token_outlookmail_graph()
+        if not access_token:
+            return []
+        folder_specs = [("inbox", "inbox")]
+        if include_junk:
+            folder_specs.append(("junkemail", "junk"))
+        all_messages = []
+        try:
+            for folder_id, folder_label in folder_specs:
+                resp = curl_requests.get(
+                    f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder_id}/messages",
+                    params={
+                        "$top": top,
+                        "$select": "id,subject,from,receivedDateTime,bodyPreview",
+                        "$orderby": "receivedDateTime desc",
+                    },
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Prefer": "outlook.body-content-type='text'",
+                    },
+                    proxies=self._outlookmail_proxies(),
+                    timeout=30,
+                    impersonate=self.impersonate,
+                )
+                if resp.status_code != 200:
+                    continue
+                payload = resp.json() if resp.content else {}
+                values = payload.get("value") if isinstance(payload, dict) else []
+                for item in values if isinstance(values, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    msg_id = str(item.get("id") or "").strip()
+                    detail = self._fetch_email_detail_outlookmail_graph(msg_id, access_token) if msg_id else None
+                    body_obj = detail.get("body") if isinstance(detail, dict) else {}
+                    body = str(body_obj.get("content") or "") if isinstance(body_obj, dict) else ""
+                    body_type = str(body_obj.get("contentType") or "text") if isinstance(body_obj, dict) else "text"
+                    all_messages.append({
+                        "id": msg_id,
+                        "folder": folder_label,
+                        "subject": str(item.get("subject") or ""),
+                        "from": str((item.get("from") or {}).get("emailAddress", {}).get("address") or ""),
+                        "date": str(item.get("receivedDateTime") or ""),
+                        "body_preview": str(item.get("bodyPreview") or ""),
+                        "body": body,
+                        "body_type": body_type,
+                    })
+        except Exception:
+            return all_messages
+        return all_messages
+
+    def _fetch_emails_outlookmail_imap(self, top: int = 10, include_junk: bool = False):
+        account = self._outlookmail_account
+        if not account:
+            return []
+        access_token = self._get_access_token_outlookmail_imap()
+        if not access_token:
+            return []
+        connection = None
+        folder_names = ['"INBOX"']
+        if include_junk:
+            folder_names.extend(OUTLOOKMAIL_IMAP_JUNK_FOLDERS)
+        result = []
+        try:
+            connection = imaplib.IMAP4_SSL(OUTLOOKMAIL_IMAP_SERVER, OUTLOOKMAIL_IMAP_PORT)
+            auth_string = f"user={account.email}\1auth=Bearer {access_token}\1\1".encode("utf-8")
+            connection.authenticate("XOAUTH2", lambda x: auth_string)
+            for folder_name in folder_names:
+                try:
+                    select_status, _ = connection.select(folder_name)
+                except Exception:
+                    continue
+                if select_status != 'OK':
+                    continue
+                status, messages = connection.search(None, 'ALL')
+                if status != 'OK' or not messages or not messages[0]:
+                    continue
+                message_ids = messages[0].split()
+                recent_ids = message_ids[-top:][::-1]
+                for msg_id in recent_ids:
+                    try:
+                        status, msg_data = connection.fetch(msg_id, '(RFC822)')
+                        if status != 'OK' or not msg_data or not msg_data[0]:
+                            continue
+                        raw_email = msg_data[0][1]
+                        msg = email.message_from_bytes(raw_email)
+                        body = _extract_email_body(msg)
+                        result.append({
+                            "id": msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id),
+                            "folder": folder_name.strip('"').lower(),
+                            "subject": _decode_header_value(msg.get("Subject", "")),
+                            "from": _decode_header_value(msg.get("From", "")),
+                            "date": str(msg.get("Date", "")),
+                            "body_preview": body[:240],
+                            "body": body,
+                            "body_type": "text",
+                        })
+                    except Exception:
+                        continue
+            return result
+        except Exception:
+            return result
+        finally:
+            if connection:
+                try:
+                    connection.logout()
+                except Exception:
+                    pass
+
+    def _fetch_emails_outlookmail(self, top: int = 10, include_junk: bool = False):
+        mode = OUTLOOKMAIL_FETCH_MODE
+        if mode in {"auto", "graph"}:
+            messages = self._fetch_emails_outlookmail_graph(top=top, include_junk=include_junk)
+            if messages or mode == "graph":
+                return messages
+        if mode in {"auto", "imap"}:
+            return self._fetch_emails_outlookmail_imap(top=top, include_junk=include_junk)
+        return []
+
+    def _extract_outlookmail_code_from_message(self, msg: dict, email_addr: str = "") -> Optional[str]:
+        if not isinstance(msg, dict):
+            return None
+        content = "\n".join([
+            str(msg.get("subject") or ""),
+            str(msg.get("from") or ""),
+            str(msg.get("body_preview") or ""),
+            str(msg.get("body") or ""),
+        ])
+        lowered = content.lower()
+        if "openai" not in lowered and "chatgpt" not in lowered:
+            return None
+        return self._extract_verification_code(content)
+
+    def _extract_outlookmail_code(self, messages: list, email_addr: str = "") -> Optional[str]:
+        for msg in messages:
+            code = self._extract_outlookmail_code_from_message(msg, email_addr)
+            if code:
                 return code
         return None
+
+    def _collect_outlookmail_candidate_codes(self, email_addr: str, tried_codes: set[str],
+                                             include_junk: bool = False) -> list[str]:
+        candidates = []
+        messages = self._fetch_emails_outlookmail(top=10, include_junk=include_junk) or []
+        for msg in messages:
+            code = self._extract_outlookmail_code_from_message(msg, email_addr)
+            if code and code not in tried_codes and code not in candidates:
+                candidates.append(code)
+        return candidates
+
+    def _extract_verification_code(self, email_content: str):
+        return _extract_verification_code(email_content)
 
     # ==================== LaMail ====================
 
@@ -1991,13 +2424,30 @@ class ChatGPTRegister:
         self._print(f"[OTP] 等待验证码邮件 (最多 {timeout}s, provider={effective_provider}, poll={poll_interval:.1f}s)...")
         start_time = time.time()
         seen_ids: set = set()
+        outlookmail_junk_mode_logged = False
 
         while time.time() - start_time < timeout:
             code = None
+            elapsed_seconds = max(0.0, time.time() - start_time)
 
-            if effective_provider == "cfmail":
+            if effective_provider == "outlookmail":
+                include_junk = _should_retry_outlookmail_with_junk(elapsed_seconds)
+                if include_junk and not outlookmail_junk_mode_logged:
+                    self._print("[outlookmail] 超过20秒未取到验证码，开始重跑拉邮并检查骚扰邮件文件夹...")
+                    outlookmail_junk_mode_logged = True
+                messages = self._fetch_emails_outlookmail(top=10, include_junk=include_junk)
+                new_messages = []
+                for msg in messages:
+                    msg_id = str(msg.get("id") or msg.get("date") or msg.get("subject") or "").strip()
+                    folder_name = str(msg.get("folder") or "inbox").strip().lower()
+                    seen_key = f"{folder_name}::{msg_id}" if msg_id else ""
+                    if seen_key and seen_key not in seen_ids:
+                        seen_ids.add(seen_key)
+                        new_messages.append(msg)
+                if new_messages:
+                    code = self._extract_outlookmail_code(new_messages, email)
+            elif effective_provider == "cfmail":
                 messages = self._fetch_emails_cfmail(mail_token)
-                # 过滤已见过的消息
                 new_messages = []
                 for msg in messages:
                     msg_id = str(msg.get("id") or msg.get("createdAt") or "").strip()
@@ -2026,23 +2476,12 @@ class ChatGPTRegister:
                         new_messages.append(msg)
                 if new_messages:
                     code = self._extract_lamail_code(new_messages, mail_token)
-            else:
-                # DuckMail
-                messages = self._fetch_emails_duckmail(mail_token)
-                if messages:
-                    first_msg = messages[0]
-                    msg_id = first_msg.get("id") or first_msg.get("@id")
-                    if msg_id:
-                        detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
-                        if detail:
-                            content = detail.get("text") or detail.get("html") or ""
-                            code = self._extract_verification_code(content)
 
             if code:
                 self._print(f"[OTP] 验证码: {code}")
                 return code
 
-            elapsed = int(time.time() - start_time)
+            elapsed = int(elapsed_seconds)
             self._print(f"[OTP] 等待中... ({elapsed}s/{timeout}s, poll={poll_interval:.1f}s)")
             time.sleep(poll_interval)
 
@@ -2175,7 +2614,8 @@ class ChatGPTRegister:
             "codex_cli_simplified_flow": "true",
         }
         bootstrap_url = f"{OAUTH_ISSUER}/oauth/authorize?{urlencode(authorize_params)}"
-        r = self.session.get(
+        r = self._request_with_retry(
+            "get",
             bootstrap_url,
             headers={
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -2195,7 +2635,8 @@ class ChatGPTRegister:
             "screen_hint": "signup",
         }
         headers = self._auth_json_headers(continue_url, include_sentinel=True, flow="authorize_continue")
-        resp = self.session.post(
+        resp = self._request_with_retry(
+            "post",
             f"{self.AUTH}/api/accounts/authorize/continue",
             json=payload,
             headers=headers,
@@ -2219,7 +2660,8 @@ class ChatGPTRegister:
     def register(self, email: str, password: str):
         url = f"{self.AUTH}/api/accounts/user/register"
         headers = self._auth_json_headers(f"{self.AUTH}/create-account/password")
-        r = self.session.post(
+        r = self._request_with_retry(
+            "post",
             url,
             json={"username": email, "password": password},
             headers=headers,
@@ -2235,18 +2677,32 @@ class ChatGPTRegister:
 
     def send_otp(self):
         preload_url = f"{self.AUTH}/create-account/password"
-        self.session.get(preload_url, headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": self.ua,
-        }, allow_redirects=True, timeout=30, impersonate=self.impersonate)
+        self._request_with_retry(
+            "get",
+            preload_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": self.ua,
+            },
+            allow_redirects=True,
+            timeout=30,
+            impersonate=self.impersonate,
+        )
 
         url = f"{self.AUTH}/api/accounts/email-otp/send"
-        r = self.session.get(url, headers={
-            "Accept": "application/json",
-            "Referer": preload_url,
-            "User-Agent": self.ua,
-        }, allow_redirects=True, timeout=30, impersonate=self.impersonate)
+        r = self._request_with_retry(
+            "get",
+            url,
+            headers={
+                "Accept": "application/json",
+                "Referer": preload_url,
+                "User-Agent": self.ua,
+            },
+            allow_redirects=True,
+            timeout=30,
+            impersonate=self.impersonate,
+        )
         try:
             data = r.json()
         except Exception:
@@ -2257,7 +2713,8 @@ class ChatGPTRegister:
     def validate_otp(self, code: str):
         url = f"{self.AUTH}/api/accounts/email-otp/validate"
         headers = self._auth_json_headers(f"{self.AUTH}/email-verification")
-        r = self.session.post(
+        r = self._request_with_retry(
+            "post",
             url,
             json={"code": code},
             headers=headers,
@@ -2278,7 +2735,8 @@ class ChatGPTRegister:
             include_sentinel=True,
             flow="authorize_continue",
         )
-        r = self.session.post(
+        r = self._request_with_retry(
+            "post",
             url,
             json={"name": name, "birthdate": birthdate},
             headers=headers,
@@ -2459,7 +2917,7 @@ class ChatGPTRegister:
         return session_info
 
     def establish_chatgpt_web_session(self, email: str, password: str, mail_token: str | None = None,
-                                      provider: str = "duckmail") -> dict[str, Any]:
+                                      provider: str = "outlookmail") -> dict[str, Any]:
         """通过 chatgpt.com 自身的 signin/openai 链建立 next-auth 登录态。"""
         self._print("[Session] 开始通过 ChatGPT 登录链建立 next-auth 会话...")
         web_session = curl_requests.Session(impersonate=self.impersonate)
@@ -2586,9 +3044,17 @@ class ChatGPTRegister:
                 tried_codes: set[str] = set()
                 otp_success = False
                 otp_deadline = time.time() + 120
+                outlookmail_junk_mode_logged = False
                 while time.time() < otp_deadline and not otp_success:
                     candidate_codes: list[str] = []
-                    if provider == "cfmail":
+                    if provider == "outlookmail":
+                        oauth_elapsed_seconds = max(0.0, 120 - max(0.0, otp_deadline - time.time()))
+                        include_junk = _should_retry_outlookmail_with_junk(oauth_elapsed_seconds)
+                        if include_junk and not outlookmail_junk_mode_logged:
+                            self._print("[outlookmail] OAuth 阶段超过20秒未取到验证码，开始重跑拉邮并检查骚扰邮件文件夹...")
+                            outlookmail_junk_mode_logged = True
+                        candidate_codes = self._collect_outlookmail_candidate_codes(email, tried_codes, include_junk=include_junk)
+                    elif provider == "cfmail":
                         messages = self._fetch_emails_cfmail(mail_token)
                         for msg in messages[:12]:
                             content = "\n".join([
@@ -2633,18 +3099,6 @@ class ChatGPTRegister:
                                         str(detail.get("from") or ""),
                                     ])
                             code = self._extract_verification_code(content)
-                            if code and code not in tried_codes:
-                                candidate_codes.append(code)
-                    else:
-                        messages = self._fetch_emails_duckmail(mail_token) or []
-                        for msg in messages[:12]:
-                            msg_id = msg.get("id") or msg.get("@id")
-                            if not msg_id:
-                                continue
-                            detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
-                            if not detail:
-                                continue
-                            code = self._extract_verification_code(detail.get("text") or detail.get("html") or "")
                             if code and code not in tried_codes:
                                 candidate_codes.append(code)
 
@@ -2714,7 +3168,7 @@ class ChatGPTRegister:
 
     # ==================== 自动注册主流程 ====================
 
-    def run_register(self, email, password, name, birthdate, mail_token, provider="duckmail"):
+    def run_register(self, email, password, name, birthdate, mail_token, provider="outlookmail"):
         """基于 auth.openai.com 直连链路执行后端注册，避免 chatgpt csrf/signin 403 干扰。"""
         self._print("切换到 auth.openai.com 直连注册链路")
         _random_delay(0.2, 0.6)
@@ -2980,7 +3434,7 @@ class ChatGPTRegister:
         return None
 
     def perform_codex_oauth_login_http(self, email: str, password: str, mail_token: str = None,
-                                        provider: str = "duckmail"):
+                                        provider: str = "outlookmail"):
         self._print("[OAuth] 开始执行 Codex OAuth 纯协议流程...")
 
         oauth_session = curl_requests.Session(impersonate=self.impersonate)
@@ -3157,10 +3611,18 @@ class ChatGPTRegister:
             tried_codes: set = set()
             otp_success = False
             otp_deadline = time.time() + 120
+            outlookmail_junk_mode_logged = False
 
             while time.time() < otp_deadline and not otp_success:
                 candidate_codes = []
-                if provider == "cfmail":
+                if provider == "outlookmail":
+                    oauth_elapsed_seconds = max(0.0, 120 - max(0.0, otp_deadline - time.time()))
+                    include_junk = _should_retry_outlookmail_with_junk(oauth_elapsed_seconds)
+                    if include_junk and not outlookmail_junk_mode_logged:
+                        self._print("[outlookmail] OAuth 阶段超过20秒未取到验证码，开始重跑拉邮并检查骚扰邮件文件夹...")
+                        outlookmail_junk_mode_logged = True
+                    candidate_codes = self._collect_outlookmail_candidate_codes(email, tried_codes, include_junk=include_junk)
+                elif provider == "cfmail":
                     messages = self._fetch_emails_cfmail(mail_token)
                     for msg in messages[:12]:
                         msg_id = str(msg.get("id") or msg.get("createdAt") or "").strip()
@@ -3217,19 +3679,6 @@ class ChatGPTRegister:
                                     str(detail.get("html") or ""),
                                     str(detail.get("from") or ""),
                                 ])
-                        code = self._extract_verification_code(content)
-                        if code and code not in tried_codes:
-                            candidate_codes.append(code)
-                else:
-                    messages = self._fetch_emails_duckmail(mail_token) or []
-                    for msg in messages[:12]:
-                        msg_id = msg.get("id") or msg.get("@id")
-                        if not msg_id:
-                            continue
-                        detail = self._fetch_email_detail_duckmail(mail_token, msg_id)
-                        if not detail:
-                            continue
-                        content = detail.get("text") or detail.get("html") or ""
                         code = self._extract_verification_code(content)
                         if code and code not in tried_codes:
                             candidate_codes.append(code)
@@ -3358,79 +3807,100 @@ class ChatGPTRegister:
 
 def _register_one(idx, total, proxy, output_file):
     """单个注册任务，根据 MAIL_PROVIDER 选择邮箱服务"""
-    reg = None
-    try:
-        reg = ChatGPTRegister(proxy=proxy, tag=f"{idx}")
-        provider = MAIL_PROVIDER
+    provider = MAIL_PROVIDER
+    max_attempts = 1
+    if provider == "outlookmail":
+        max_attempts = max(1, min(len(OUTLOOKMAIL_ACCOUNTS) or 1, 10))
 
-        # 根据邮箱服务创建临时邮箱
-        if provider == "cfmail":
-            reg._print("[cfmail] 创建 CF 自建邮箱...")
-            email, email_pwd, mail_token = reg.create_cfmail_email()
-        elif provider == "tempmail_lol":
-            reg._print("[tempmail_lol] 创建临时邮箱...")
-            email, email_pwd, mail_token = reg.create_tempmail_lol_email()
-        elif provider == "lamail":
-            reg._print("[lamail] 创建临时邮箱...")
-            email, email_pwd, mail_token = reg.create_lamail_email()
-        else:
-            reg._print("[DuckMail] 创建临时邮箱...")
-            if not DUCKMAIL_BEARER:
-                raise Exception("DUCKMAIL_BEARER 未设置，请在 config.json 中配置或改用 cfmail/lamail/tempmail_lol")
-            email, email_pwd, mail_token = reg.create_temp_email()
+    last_error_msg = ""
 
-        tag = email.split("@")[0]
-        reg.tag = tag
+    for attempt_no in range(1, max_attempts + 1):
+        reg = None
+        try:
+            reg = ChatGPTRegister(proxy=proxy, tag=f"{idx}")
 
-        chatgpt_password = _generate_password()
-        name = _random_name()
-        birthdate = _random_birthdate()
-
-        with _print_lock:
-            print(f"\n[开始] [{idx}/{total}] 注册账号: {email} | provider={provider}")
-            print(f"[资料] 姓名={name} | 生日={birthdate}")
-
-        # 执行注册流程
-        reg.run_register(email, chatgpt_password, name, birthdate, mail_token, provider=provider)
-
-        # OAuth（可选）
-        oauth_ok = True
-        if ENABLE_OAUTH:
-            reg._print("[OAuth] 开始获取 Codex Token...")
-            tokens = reg.perform_codex_oauth_login_http(
-                email, chatgpt_password, mail_token=mail_token, provider=provider
-            )
-            if tokens:
-                tokens["password"] = chatgpt_password
-            oauth_ok = bool(tokens and tokens.get("access_token"))
-            if oauth_ok:
-                _save_codex_tokens(email, tokens, register=reg)
-                reg._print("[OAuth] Token 已保存")
+            # 根据邮箱服务创建临时邮箱
+            if provider == "outlookmail":
+                reg._print(f"[outlookmail] 选择邮箱池账号... ({attempt_no}/{max_attempts})")
+                email, email_pwd, mail_token = reg.create_outlookmail_email()
+            elif provider == "cfmail":
+                reg._print("[cfmail] 创建 CF 自建邮箱...")
+                email, email_pwd, mail_token = reg.create_cfmail_email()
+            elif provider == "tempmail_lol":
+                reg._print("[tempmail_lol] 创建临时邮箱...")
+                email, email_pwd, mail_token = reg.create_tempmail_lol_email()
+            elif provider == "lamail":
+                reg._print("[lamail] 创建临时邮箱...")
+                email, email_pwd, mail_token = reg.create_lamail_email()
             else:
-                msg = "OAuth 获取失败"
-                if OAUTH_REQUIRED:
-                    raise Exception(f"{msg}（oauth_required=true）")
-                reg._print(f"[OAuth] {msg}（按配置继续）")
+                raise Exception(f"不支持的邮箱服务: {provider}")
 
-        # 线程安全写入结果
-        with _file_lock:
-            with open(output_file, "a", encoding="utf-8") as out:
-                line = f"{email}----{chatgpt_password}"
-                if email_pwd:
-                    line += f"----{email_pwd}"
-                line += f"----oauth={'ok' if oauth_ok else 'fail'}\n"
-                out.write(line)
+            tag = email.split("@")[0]
+            reg.tag = tag
 
-        with _print_lock:
-            print(f"\n[OK] [{tag}] {email} 注册成功 | oauth={'ok' if oauth_ok else 'fail'}")
-        return True, email, None
+            chatgpt_password = _generate_password()
+            name = _random_name()
+            birthdate = _random_birthdate()
 
-    except Exception as e:
-        error_msg = str(e)
-        with _print_lock:
-            print(f"\n[FAIL] [{idx}] 注册失败: {error_msg}")
-            traceback.print_exc()
-        return False, None, error_msg
+            with _print_lock:
+                print(f"\n[开始] [{idx}/{total}] 注册账号: {email} | provider={provider}")
+                print(f"[资料] 姓名={name} | 生日={birthdate}")
+
+            # 执行注册流程
+            reg.run_register(email, chatgpt_password, name, birthdate, mail_token, provider=provider)
+
+            # OAuth（可选）
+            oauth_ok = True
+            if ENABLE_OAUTH:
+                reg._print("[OAuth] 开始获取 Codex Token...")
+                tokens = reg.perform_codex_oauth_login_http(
+                    email, chatgpt_password, mail_token=mail_token, provider=provider
+                )
+                if tokens:
+                    tokens["password"] = chatgpt_password
+                oauth_ok = bool(tokens and tokens.get("access_token"))
+                if oauth_ok:
+                    _save_codex_tokens(email, tokens, register=reg)
+                    reg._print("[OAuth] Token 已保存")
+                else:
+                    msg = "OAuth 获取失败"
+                    if OAUTH_REQUIRED:
+                        raise Exception(f"{msg}（oauth_required=true）")
+                    reg._print(f"[OAuth] {msg}（按配置继续）")
+
+            # 线程安全写入结果
+            with _file_lock:
+                with open(output_file, "a", encoding="utf-8") as out:
+                    line = f"{email}----{chatgpt_password}"
+                    if email_pwd:
+                        line += f"----{email_pwd}"
+                    line += f"----oauth={'ok' if oauth_ok else 'fail'}\n"
+                    out.write(line)
+
+            with _print_lock:
+                print(f"\n[OK] [{tag}] {email} 注册成功 | oauth={'ok' if oauth_ok else 'fail'}")
+            return True, email, None
+
+        except Exception as e:
+            error_msg = str(e)
+            last_error_msg = error_msg
+            current_outlook_email = ""
+            if provider == "outlookmail" and reg and getattr(reg, "_outlookmail_account", None):
+                current_outlook_email = str(getattr(reg._outlookmail_account, "email", "") or "").strip()
+
+            if provider == "outlookmail" and current_outlook_email and _is_outlookmail_username_registration_error(error_msg):
+                _mark_outlookmail_skipped(current_outlook_email, "该邮箱可能已注册过 OpenAI，跳过并切换下一个账号")
+                if attempt_no < max_attempts:
+                    with _print_lock:
+                        print(f"\n[WARN] [{idx}] Outlook 邮箱 {current_outlook_email} 注册用户名失败，改用下一个账号继续重试 ({attempt_no + 1}/{max_attempts})")
+                    continue
+
+            with _print_lock:
+                print(f"\n[FAIL] [{idx}] 注册失败: {error_msg}")
+                traceback.print_exc()
+            return False, None, error_msg
+
+    return False, None, last_error_msg or "outlookmail 无可用账号"
 
 def request_stop_register() -> None:
     global _STOP_REQUESTED
@@ -3452,19 +3922,26 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     provider = MAIL_PROVIDER
 
     # 检查邮箱服务配置
-    if provider == "cfmail":
+    if provider == "outlookmail":
+        with _outlookmail_skip_lock:
+            OUTLOOKMAIL_SKIPPED_EMAILS.clear()
+        _reload_outlookmail_accounts_if_needed()
+        if not OUTLOOKMAIL_ACCOUNTS:
+            print(f"❌ 错误: mail_provider=outlookmail 但未找到可用的 outlookmail 配置")
+            print(f"   请检查配置文件: {OUTLOOKMAIL_CONFIG_PATH}")
+            return
+        available_outlook_accounts = len(OUTLOOKMAIL_ACCOUNTS)
+        if total_accounts > available_outlook_accounts:
+            print(f"⚠️ 警告: 请求注册数量 {total_accounts} 超过 Outlook 邮箱池数量 {available_outlook_accounts}，本次将仅执行 {available_outlook_accounts} 个")
+            total_accounts = available_outlook_accounts
+    elif provider == "cfmail":
         if not CFMAIL_ACCOUNTS:
             print(f"❌ 错误: mail_provider=cfmail 但未找到可用的 cfmail 配置")
             print(f"   请检查配置文件: {_CFMAIL_CONFIG_PATH}")
             return
-    elif provider == "duckmail":
-        if not DUCKMAIL_BEARER:
-            print("❌ 错误: mail_provider=duckmail 但未设置 DUCKMAIL_BEARER")
-            print("   请在 config.json 中设置 duckmail_bearer，或将 mail_provider 改为 cfmail/lamail/tempmail_lol")
-            return
     elif provider not in {"tempmail_lol", "lamail"}:
         print(f"❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: duckmail / cfmail / lamail / tempmail_lol")
+        print("   可选值: outlookmail / cfmail / lamail / tempmail_lol")
         return
 
     actual_workers = min(max_workers, total_accounts)
@@ -3472,12 +3949,15 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     print(f"  ChatGPT 批量自动注册")
     print(f"  注册数量: {total_accounts} | 并发数: {actual_workers}")
     print(f"  邮箱服务: {provider}")
-    if provider == "cfmail":
+    if provider == "outlookmail":
+        outlook_names = ", ".join(a.name for a in OUTLOOKMAIL_ACCOUNTS)
+        print(f"  OutlookMail 配置: {outlook_names}")
+        print(f"  OutlookMail 模式: {OUTLOOKMAIL_PROFILE_MODE}")
+        print(f"  OutlookMail 拉取: {OUTLOOKMAIL_FETCH_MODE}")
+    elif provider == "cfmail":
         cfmail_names = ", ".join(a.name for a in CFMAIL_ACCOUNTS)
         print(f"  cfmail 配置: {cfmail_names}")
         print(f"  cfmail 模式: {CFMAIL_PROFILE_MODE}")
-    elif provider == "duckmail":
-        print(f"  DuckMail: {DUCKMAIL_API_BASE}")
     elif provider == "tempmail_lol":
         print(f"  TempMail.lol: {TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
@@ -3488,7 +3968,11 @@ def run_batch(total_accounts: int = 3, output_file="registered_accounts.txt",
     if ENABLE_OAUTH:
         print(f"  Token输出: {TOKEN_JSON_DIR}/, {AK_FILE}, {RK_FILE}")
     print(f"  CPA分批上传: 每 {max(1, int(cpa_upload_every_n))} 个成功账号触发一次（异步入队）")
-    print(f"  OTP轮询: default={OTP_POLL_INTERVAL_DEFAULT:.1f}s, lamail={OTP_POLL_INTERVAL_BY_PROVIDER.get('lamail', OTP_POLL_INTERVAL_DEFAULT):.1f}s")
+    print(
+        f"  OTP轮询: default={OTP_POLL_INTERVAL_DEFAULT:.1f}s, "
+        f"outlookmail={OTP_POLL_INTERVAL_BY_PROVIDER.get('outlookmail', OTP_POLL_INTERVAL_DEFAULT):.1f}s, "
+        f"lamail={OTP_POLL_INTERVAL_BY_PROVIDER.get('lamail', OTP_POLL_INTERVAL_DEFAULT):.1f}s"
+    )
     print(f"  Delay系数: {REGISTER_DELAY_FACTOR:.2f}")
     print(f"  输出文件: {output_file}")
     print(f"{'#' * 60}\n")
@@ -3573,7 +4057,19 @@ def main():
     provider = MAIL_PROVIDER
 
     # 检查配置
-    if provider == "cfmail":
+    if provider == "outlookmail":
+        _reload_outlookmail_accounts_if_needed()
+        if not OUTLOOKMAIL_ACCOUNTS:
+            print(f"\n⚠️  警告: mail_provider=outlookmail 但未找到可用配置")
+            print(f"   配置文件: {OUTLOOKMAIL_CONFIG_PATH}")
+            print("   请参考 outlookEmail 项目的 Outlook 账号格式补充配置")
+            print("\n   按 Enter 继续尝试运行 (可能会失败)...")
+            input()
+        else:
+            outlook_names = ", ".join(a.name for a in OUTLOOKMAIL_ACCOUNTS)
+            print(f"\n[Info] OutlookMail 配置已加载: {outlook_names}")
+            print(f"[Info] OutlookMail 拉取模式: {OUTLOOKMAIL_FETCH_MODE}")
+    elif provider == "cfmail":
         if not CFMAIL_ACCOUNTS:
             print(f"\n⚠️  警告: mail_provider=cfmail 但未找到可用配置")
             print(f"   配置文件: {_CFMAIL_CONFIG_PATH}")
@@ -3583,12 +4079,6 @@ def main():
         else:
             cfmail_names = ", ".join(a.name for a in CFMAIL_ACCOUNTS)
             print(f"\n[Info] cfmail 配置已加载: {cfmail_names}")
-    elif provider == "duckmail":
-        if not DUCKMAIL_BEARER:
-            print("\n⚠️  警告: 未设置 DUCKMAIL_BEARER")
-            print("   请编辑 config.json 设置 duckmail_bearer，或将 mail_provider 改为 cfmail/lamail/tempmail_lol")
-            print("\n   按 Enter 继续尝试运行 (可能会失败)...")
-            input()
     elif provider == "tempmail_lol":
         print(f"\n[Info] TempMail.lol 已启用: {TEMPMAIL_LOL_API_BASE}")
     elif provider == "lamail":
@@ -3601,7 +4091,7 @@ def main():
             print("[Info] LaMail API Key: 未配置（将使用匿名临时邮箱能力）")
     else:
         print(f"\n❌ 错误: 不支持的 mail_provider={provider}")
-        print("   可选值: duckmail / cfmail / lamail / tempmail_lol")
+        print("   可选值: outlookmail / cfmail / lamail / tempmail_lol")
         return
 
     # 代理配置
